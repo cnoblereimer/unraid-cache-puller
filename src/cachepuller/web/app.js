@@ -76,10 +76,65 @@ const STATE_LABELS = {
 
 // ---- state -----------------------------------------------------------------
 
+const FILE_FILTER_DEFAULTS = { q: "", hot: false, share: "", status: "", where: "", since: "" };
+const FILE_DEFAULTS = { ...FILE_FILTER_DEFAULTS, sort: "score", dir: "desc", offset: 0, limit: 100 };
+const FILTERS_KEY = "cachepuller.files";
+
+// Remember filters and sort in this browser (never required: storage can fail).
+function loadFileFilters() {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(FILTERS_KEY) || "{}") || {}; } catch (_) { /* ignore */ }
+  const f = { ...FILE_DEFAULTS };
+  for (const k of Object.keys(FILE_DEFAULTS)) {
+    if (k !== "offset" && k !== "limit" && typeof saved[k] === typeof FILE_DEFAULTS[k]) f[k] = saved[k];
+  }
+  return f;
+}
+function saveFileFilters() {
+  const { offset, limit, ...keep } = state.files;
+  try { localStorage.setItem(FILTERS_KEY, JSON.stringify(keep)); } catch (_) { /* ignore */ }
+}
+function filtersActive() {
+  return Object.keys(FILE_FILTER_DEFAULTS).some((k) => state.files[k] !== FILE_FILTER_DEFAULTS[k]);
+}
+function setFiles(changes) {
+  Object.assign(state.files, changes, { offset: 0 });
+  saveFileFilters();
+  syncFilterControls();
+  loadFiles().catch(showError);
+}
+function syncFilterControls() {
+  const f = state.files;
+  if (document.activeElement !== $("#file-search")) $("#file-search").value = f.q;
+  $("#hot-only").checked = f.hot;
+  $("#f-status").value = f.status;
+  $("#f-since").value = f.since;
+  const sortValue = `${f.sort}:${f.dir}`;
+  const sortSel = $("#f-sort");
+  if (![...sortSel.options].some((o) => o.value === sortValue)) {
+    sortSel.append(el("option", { value: sortValue }, `Sort: ${f.sort} (${f.dir})`));
+  }
+  sortSel.value = sortValue;
+  const o = state.fileOptions || { shares: [], pools: [], disks: [] };
+  setOptions($("#f-share"), [["", "All shares"], ...o.shares.map((s) => [s, s])], f.share);
+  setOptions($("#f-where"), [["", "Anywhere"], ["array", "Array (any disk)"],
+    ...o.pools.map((p) => [p, `Pool: ${p}`]), ...o.disks.map((d) => [d, d])], f.where);
+  $("#f-clear").hidden = !filtersActive();
+}
+// Fill a <select> with fixed + dynamic options, keeping the current choice.
+function setOptions(select, options, value) {
+  const have = new Set(options.map((o) => o[0]));
+  if (value && !have.has(value)) options.push([value, value]);
+  const cur = [...select.options].map((o) => o.value + "\u0000" + o.textContent).join("|");
+  const next = options.map((o) => o[0] + "\u0000" + o[1]).join("|");
+  if (cur !== next) select.replaceChildren(...options.map(([v, label]) => el("option", { value: v }, label)));
+  select.value = value;
+}
+
 const state = {
   tab: "overview",
   overview: null,
-  files: { q: "", hot: false, offset: 0, limit: 100 },
+  files: loadFileFilters(),
   settings: null,
   pending: {},
 };
@@ -117,7 +172,7 @@ function renderOverview(o) {
         el("strong", {}, "Dry run: nothing is being moved yet."),
         "Let it watch your shares for a few days, check the plan on the Files tab, then switch dry run off in Settings."),
       el("div", { class: "row" },
-        el("button", { class: "btn", type: "button", onclick: () => showTab("files", { hot: true }) }, "Review plan"),
+        el("button", { class: "btn", type: "button", onclick: () => showTab("files", { filters: { status: "candidate" } }) }, "Review plan"),
         el("button", { class: "btn primary", type: "button", onclick: () => showTab("settings") }, "Open settings"))));
   }
   const managed = o.shares.filter((s) => s.status === "managed");
@@ -240,11 +295,58 @@ function renderPool(p) {
 
 // ---- files -------------------------------------------------------------------
 
+let filesRequest = 0;
 async function loadFiles() {
   const f = state.files;
-  const qs = new URLSearchParams({ q: f.q, hot: f.hot ? "1" : "0", limit: f.limit, offset: f.offset });
-  const data = await api(`/api/files?${qs}`);
-  renderFiles(data);
+  const qs = new URLSearchParams({
+    q: f.q, hot: f.hot ? "1" : "0", share: f.share, status: f.status, where: f.where, since: f.since,
+    sort: f.sort, dir: f.dir, limit: f.limit, offset: f.offset,
+  });
+  const mine = ++filesRequest;
+  // Status/location filters and size sorting look every file up on disk; say so if it's slow.
+  const slow = setTimeout(() => {
+    if (mine === filesRequest) $("#files-hint").textContent = "Checking where each file is… (the first time can take a few seconds with many files)";
+  }, 400);
+  try {
+    const data = await api(`/api/files?${qs}`);
+    if (mine === filesRequest) renderFiles(data);  // ignore answers to outdated requests
+  } finally {
+    clearTimeout(slow);
+  }
+}
+
+const FILE_COLUMNS = [
+  // [label, sort key or null, css class, default direction]
+  ["File", "path", "", "asc"],
+  ["Score", "score", "num", "desc"],
+  ["Accesses", "hits", "num hide-sm", "desc"],
+  ["Last used", "last_access", "hide-sm", "desc"],
+  ["Where", null, "hide-sm"],
+  ["Size", "size", "num hide-sm", "desc"],
+  ["Status", null, ""],
+  ["", null, ""],
+];
+
+function fileHeader() {
+  const f = state.files;
+  return el("thead", {}, el("tr", {}, FILE_COLUMNS.map(([label, key, cls, defDir]) => {
+    if (!key) return el("th", { class: cls }, label);
+    const active = f.sort === key;
+    const arrow = active ? (f.dir === "asc" ? "▲" : "▼") : "↕";
+    return el("th", {
+      class: `${cls} sortable`, tabindex: 0, role: "button",
+      "aria-sort": active ? (f.dir === "asc" ? "ascending" : "descending") : null,
+      title: `Sort by ${label.toLowerCase()}`,
+      onclick: () => sortBy(key, defDir),
+      onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); sortBy(key, defDir); } },
+    }, label, " ", el("span", { class: "arrow", "aria-hidden": "true" }, arrow));
+  })));
+}
+
+function sortBy(key, defDir) {
+  const f = state.files;
+  const dir = f.sort === key ? (f.dir === "asc" ? "desc" : "asc") : defDir;
+  setFiles({ sort: key, dir });
 }
 
 function renderCleanupBar(c) {
@@ -298,12 +400,14 @@ async function forget(r, btn) {
 function renderFiles(data) {
   $("#files-hint").textContent =
     `Score ≈ number of separate recent accesses (older ones count less). Files scoring ${data.min_score} or more are moved to the cache.`;
+  if (data.checked && data.elapsed >= 1) {
+    $("#files-hint").textContent += ` Checked where ${data.total === 1 ? "the file is" : "files are"} in ${data.elapsed.toFixed(1)} s; results are reused for a few minutes.`;
+  }
   renderCleanupBar(state.overview && state.overview.cleanup);
+  state.fileOptions = data.options;
+  syncFilterControls();
   const table = $("#files-table");
-  const head = el("thead", {}, el("tr", {},
-    el("th", {}, "File"), el("th", { class: "num" }, "Score"), el("th", { class: "num hide-sm" }, "Accesses"),
-    el("th", { class: "hide-sm" }, "Last used"), el("th", { class: "hide-sm" }, "Where"), el("th", {}, "Status"),
-    el("th", {}, "")));
+  const head = fileHeader();
   const rows = data.rows.map((r) => {
     const [label, cls] = STATE_LABELS[r.state] || [r.state, ""];
     const pct = Math.min(100, (r.score / (data.min_score * 2)) * 100);
@@ -326,15 +430,17 @@ function renderFiles(data) {
         el("div", { class: "mini" }, el("span", { class: r.hot ? "hot" : "", style: { width: pct + "%" } })))),
       el("td", { class: "num hide-sm" }, r.hits.toLocaleString()),
       el("td", { class: "nowrap hide-sm", title: when(r.last_access) }, ago(r.last_access)),
-      el("td", { class: "nowrap hide-sm" }, r.location || "–", r.size ? el("div", { class: "reason" }, bytes(r.size)) : null),
+      el("td", { class: "nowrap hide-sm" }, r.location || "–"),
+      el("td", { class: "num hide-sm" }, r.size ? bytes(r.size) : "–"),
       el("td", {}, el("span", { class: "badge " + cls }, label), el("div", { class: "reason" }, r.reason)),
       el("td", {}, el("div", { class: "actions" }, actions)));
   });
-  const emptyText = state.files.q ? "No files match your search."
-    : state.files.hot ? "No frequently used files yet. Files show up here as they get opened."
+  const emptyText = filtersActive()
+    ? el("span", {}, "No files match these filters. ",
+      el("button", { class: "btn small link", type: "button", onclick: () => setFiles({ ...FILE_FILTER_DEFAULTS }) }, "Clear filters"))
     : "No file accesses recorded yet. Open some files on a managed share and they'll appear here.";
   table.replaceChildren(head, el("tbody", {}, rows.length ? rows
-    : el("tr", {}, el("td", { colspan: 7, class: "empty" }, emptyText))));
+    : el("tr", {}, el("td", { colspan: FILE_COLUMNS.length, class: "empty" }, emptyText))));
 
   const f = state.files;
   const pager = $("#files-pager");
@@ -516,10 +622,10 @@ function showTab(tab, opts) {
   state.tab = tab;
   document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
   document.querySelectorAll(".tab").forEach((s) => s.classList.toggle("active", s.id === `tab-${tab}`));
-  if (opts && opts.hot !== undefined) {
-    state.files.hot = opts.hot;
-    $("#hot-only").checked = opts.hot;
-    state.files.offset = 0;
+  if (opts && opts.filters) {
+    Object.assign(state.files, FILE_FILTER_DEFAULTS, opts.filters, { offset: 0 });
+    saveFileFilters();
+    syncFilterControls();
   }
   if (location.hash !== `#${tab}`) history.replaceState(null, "", `#${tab}`);
   refresh();
@@ -554,9 +660,19 @@ function init() {
   let timer;
   $("#file-search").addEventListener("input", (e) => {
     clearTimeout(timer);
-    timer = setTimeout(() => { state.files.q = e.target.value.trim(); state.files.offset = 0; loadFiles().catch(showError); }, 250);
+    timer = setTimeout(() => setFiles({ q: e.target.value.trim() }), 250);
   });
-  $("#hot-only").addEventListener("change", (e) => { state.files.hot = e.target.checked; state.files.offset = 0; loadFiles().catch(showError); });
+  $("#hot-only").addEventListener("change", (e) => setFiles({ hot: e.target.checked }));
+  $("#f-share").addEventListener("change", (e) => setFiles({ share: e.target.value }));
+  $("#f-status").addEventListener("change", (e) => setFiles({ status: e.target.value }));
+  $("#f-where").addEventListener("change", (e) => setFiles({ where: e.target.value }));
+  $("#f-since").addEventListener("change", (e) => setFiles({ since: e.target.value }));
+  $("#f-sort").addEventListener("change", (e) => {
+    const [sort, dir] = e.target.value.split(":");
+    setFiles({ sort, dir });
+  });
+  $("#f-clear").addEventListener("click", () => setFiles({ ...FILE_FILTER_DEFAULTS }));
+  syncFilterControls();
   $("#save").addEventListener("click", saveSettings);
   $("#discard").addEventListener("click", () => { state.pending = {}; renderSettings(); });
   window.addEventListener("beforeunload", (e) => { if (Object.keys(state.pending).length) e.preventDefault(); });

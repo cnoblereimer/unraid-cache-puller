@@ -156,3 +156,76 @@ def test_forget_endpoint(daemon, unraid, db):
     assert api.forget({"share": "media", "relpath": "gone.mkv"})["ok"]
     assert [r["relpath"] for r in api.files()["rows"]] == ["here.mkv"]
     assert "cleanup" in api.overview()
+
+
+@pytest.fixture
+def library(daemon, unraid, db):
+    """Files in different places with different scores and access times."""
+    mnt = unraid.mnt_root
+    now = time.time()
+    write(f"{mnt}/disk1/media/b-hot.mkv", b"x" * 300)
+    write(f"{mnt}/disk2/media/a-cold.mkv", b"x" * 100)
+    write(f"{mnt}/cache/media/c-pool.mkv", b"x" * 200)
+    write(f"{mnt}/disk1/games/d-game.bin", b"x" * 50)
+    db.record_hits({
+        ("media", "b-hot.mkv"): [now - 30, now - 20, now - 10],      # score 3, used now
+        ("media", "a-cold.mkv"): [now - 10 * 86400],                 # used 10 days ago
+        ("media", "c-pool.mkv"): [now - 3600 * 5, now - 3600 * 4],   # used 4 hours ago
+        ("games", "d-game.bin"): [now - 60],
+        ("media", "e-gone.mkv"): [now - 120],
+    })
+    return Api(daemon)
+
+
+def paths(res):
+    return [f"{r['share']}/{r['relpath']}" for r in res["rows"]]
+
+
+def test_sorting(library):
+    assert paths(library.files(sort="path"))[0] == "games/d-game.bin"
+    assert paths(library.files(sort="path", direction="desc"))[0] == "media/e-gone.mkv"
+    assert paths(library.files(sort="hits"))[0] == "media/b-hot.mkv"
+    assert paths(library.files(sort="last_access"))[:2] == ["media/b-hot.mkv", "games/d-game.bin"]
+    assert paths(library.files(sort="last_access", direction="asc"))[0] == "media/a-cold.mkv"
+    res = library.files(sort="size")
+    assert res["checked"] and paths(res)[:3] == ["media/b-hot.mkv", "media/c-pool.mkv", "media/a-cold.mkv"]
+    with pytest.raises(ValueError):
+        library.files(sort="bogus")
+
+
+def test_filters(library):
+    assert paths(library.files(share="games")) == ["games/d-game.bin"]
+    assert set(paths(library.files(since=86400))) == {
+        "media/b-hot.mkv", "games/d-game.bin", "media/c-pool.mkv", "media/e-gone.mkv"}
+    assert paths(library.files(status="pool")) == ["media/c-pool.mkv"]
+    assert paths(library.files(status="missing")) == ["media/e-gone.mkv"]
+    assert paths(library.files(where="disk2")) == ["media/a-cold.mkv"]
+    assert paths(library.files(where="cache")) == ["media/c-pool.mkv"]
+    assert set(paths(library.files(where="array"))) == {"media/b-hot.mkv", "media/a-cold.mkv", "games/d-game.bin"}
+    # Filters combine.
+    assert paths(library.files(where="array", share="media", since=86400)) == ["media/b-hot.mkv"]
+    res = library.files(status="cold", sort="path")
+    assert res["total"] == len(res["rows"])
+    opts = library.files()["options"]
+    assert opts["shares"] == ["games", "media"] and opts["pools"] == ["cache"]
+    with pytest.raises(ValueError):
+        library.files(status="bogus")
+
+
+def test_cached_checks_are_redone_after_a_move(library, unraid):
+    assert paths(library.files(status="pool")) == ["media/c-pool.mkv"]
+    res = library.promote({"share": "media", "relpath": "a-cold.mkv"})
+    assert res["ok"], res
+    assert paths(library.files(status="pool", sort="path")) == ["media/a-cold.mkv", "media/c-pool.mkv"]
+
+
+def test_http_files_query(daemon, library):
+    server = start_web(daemon, "127.0.0.1", 0, None)
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        status, body = _req(base + "/api/files?status=pool&sort=path&dir=asc&where=cache&since=86400")
+        assert status == 200
+        assert [r["relpath"] for r in json.loads(body)["rows"]] == ["c-pool.mkv"]
+        assert _req(base + "/api/files?sort=nope")[0] == 400
+    finally:
+        server.shutdown()

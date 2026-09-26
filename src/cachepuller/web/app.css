@@ -154,6 +154,13 @@ input[type=search], input[type=text], input[type=number], select, textarea {
   border-radius: 8px; padding: 7px 10px; min-width: 0;
 }
 input[type=search] { flex: 1 1 260px; max-width: 460px; }
+.filters select { flex: 0 1 auto; }
+.show-sm { display: none; }
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover { color: var(--text); }
+th.sortable .arrow { display: inline-block; width: 1em; text-align: center; opacity: .35; }
+th.sortable[aria-sort] { color: var(--text); }
+th.sortable[aria-sort] .arrow { opacity: 1; color: var(--accent); }
 input:focus, select:focus, textarea:focus, .btn:focus-visible, .tabs button:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent); outline-offset: 1px;
 }
@@ -244,6 +251,10 @@ table.data td.nowrap { white-space: nowrap; }
   main { padding: 16px 16px 96px; }
   .field { grid-template-columns: 1fr; }
   .hide-sm { display: none; }
+  .show-sm { display: inline-block; }
+  .filters { gap: 8px; }
+  .filters input[type=search] { flex: 1 1 100%; max-width: none; }
+  .filters select { flex: 1 1 calc(50% - 4px); min-width: 0; font-size: 13px; padding: 6px 8px; }
   .savebar { left: 16px; right: 16px; transform: none; justify-content: space-between; }
   /* File and activity tables become stacked cards on phones. */
   table.stack thead { display: none; }

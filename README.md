@@ -170,6 +170,18 @@ score, where it is now (which disk, or the cache), and what will happen to it:
 
 ![Files](docs/files.png)
 
+Click a column header (File, Score, Accesses, Last used, Size) to sort by it;
+click it again to reverse the order. The filters above the list narrow it down
+by share, status, location (the cache pool, the array, or one disk) and when a
+file was last used, and they combine with the search box. The browser
+remembers your filters and sort order, and **Clear filters** resets them.
+**Review plan** on the Overview opens the list filtered to *Will move*.
+
+Filtering by status or location, and sorting by size, needs every file
+looked up on the disks. The first time takes a few seconds with many files
+(and can wake sleeping disks); the results are then reused for a few minutes,
+and refreshed after every run, move, cleanup or settings change.
+
 Each file has two buttons. **Move to cache** moves it right away, whatever its
 score (all safety checks still apply). **Never move** adds it to the exclude
 patterns.

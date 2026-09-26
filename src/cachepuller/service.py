@@ -332,8 +332,12 @@ class Service:
         now = time.time() if now is None else now
         pool_share_root = self._p(share.pool, share.name)
         dst = os.path.join(pool_share_root, rel)
-        if os.path.lexists(dst):
-            return FileCheck("pool", "on the pool", share.pool)
+        try:
+            pool_st = os.lstat(dst)
+        except OSError:
+            pool_st = None
+        if pool_st is not None:
+            return FileCheck("pool", "on the pool", share.pool, pool_st.st_size)
         located = [d for d in disks if os.path.lexists(self._p(d, share.name, rel))]
         if not located:
             return FileCheck("missing", "not found (deleted or renamed)", "")

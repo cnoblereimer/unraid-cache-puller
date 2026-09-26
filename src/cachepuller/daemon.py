@@ -45,6 +45,9 @@ class Daemon:
         self.cleanup_running = False
         self.last_cleanup: CleanupReport | None = None
         self.deleted_removed = 0  # removed right after being deleted, since start
+        # Bumped whenever file states may have changed (moves, cleanups,
+        # settings), so cached per-file checks in the web UI get redone.
+        self.generation = 0
 
     # -- configuration -----------------------------------------------------
 
@@ -64,6 +67,7 @@ class Daemon:
         elif cfg.cleanup_interval != old_cleanup or self.next_cleanup is None:
             base = self.last_cleanup.finished if self.last_cleanup and self.last_cleanup.finished else time.time()
             self.next_cleanup = max(time.time() + 60, base + cfg.cleanup_interval)
+        self.generation += 1
         self._wake.set()
         log.info("settings updated%s", " (DRY RUN)" if cfg.dry_run else "")
 
@@ -83,6 +87,7 @@ class Daemon:
                 self.tracker.flush()
             return self.service.promote_one(share, rel)
         finally:
+            self.generation += 1
             self._work_lock.release()
 
     def run_cycle(self) -> None:
@@ -99,6 +104,7 @@ class Daemon:
                 self.last_error = str(exc)
             finally:
                 self.cycle_running = False
+                self.generation += 1
                 self.last_cycle_end = time.time()
                 self.next_cycle = self.last_cycle_end + self.cfg.run_interval
 
@@ -126,6 +132,7 @@ class Daemon:
                                               skipped_reason=f"error: {exc}")
         finally:
             self.cleanup_running = False
+            self.generation += 1
             if self.cfg.cleanup_interval:
                 self.next_cleanup = time.time() + self.cfg.cleanup_interval
 
@@ -142,10 +149,14 @@ class Daemon:
                 removed += 1
                 log.debug("forgot deleted file %s/%s", share, rel)
         self.deleted_removed += removed
+        if removed:
+            self.generation += 1
         return removed
 
     def forget(self, share: str, rel: str) -> tuple[bool, str]:
-        return self.service.forget_if_missing(share, rel)
+        result = self.service.forget_if_missing(share, rel)
+        self.generation += 1
+        return result
 
     # -- loop ----------------------------------------------------------------
 

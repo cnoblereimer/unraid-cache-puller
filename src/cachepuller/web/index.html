@@ -32,9 +32,36 @@
   <main>
     <section id="tab-overview" class="tab active"></section>
     <section id="tab-files" class="tab">
-      <div class="toolbar">
+      <div class="toolbar filters">
         <input type="search" id="file-search" placeholder="Search files…" aria-label="Search files">
+        <select id="f-share" aria-label="Share"><option value="">All shares</option></select>
+        <select id="f-status" aria-label="Status">
+          <option value="">Any status</option>
+          <option value="pool">On cache</option>
+          <option value="candidate">Will move</option>
+          <option value="cold">On array</option>
+          <option value="blocked">Won't move</option>
+          <option value="missing">Gone</option>
+          <option value="unmanaged">Not managed</option>
+        </select>
+        <select id="f-where" aria-label="Where"><option value="">Anywhere</option></select>
+        <select id="f-since" aria-label="Last used">
+          <option value="">Used any time</option>
+          <option value="3600">Used in the last hour</option>
+          <option value="86400">Used in the last 24 hours</option>
+          <option value="604800">Used in the last 7 days</option>
+          <option value="2592000">Used in the last 30 days</option>
+        </select>
+        <select id="f-sort" class="show-sm" aria-label="Sort by">
+          <option value="score:desc">Sort: highest score</option>
+          <option value="hits:desc">Sort: most accesses</option>
+          <option value="last_access:desc">Sort: recently used</option>
+          <option value="last_access:asc">Sort: least recently used</option>
+          <option value="size:desc">Sort: largest</option>
+          <option value="path:asc">Sort: name A–Z</option>
+        </select>
         <label class="check"><input type="checkbox" id="hot-only"> Only frequently used</label>
+        <button class="btn small link" type="button" id="f-clear" hidden>Clear filters</button>
       </div>
       <p class="hint" id="files-hint"></p>
       <div class="cleanup-bar" id="cleanup-bar"></div>

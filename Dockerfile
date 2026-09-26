@@ -19,5 +19,7 @@ EXPOSE 8080
 HEALTHCHECK --interval=60s --timeout=5s --start-period=60s \
   CMD python3 -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/healthz' % os.environ.get('UI_PORT','8080'), timeout=4)" || exit 1
 
-ENTRYPOINT ["/usr/bin/tini", "--", "cache-puller"]
+# -s: register tini as a child subreaper. With --pid=host (which this container
+# needs) tini is not PID 1, and without -s it can't reap zombie processes.
+ENTRYPOINT ["/usr/bin/tini", "-s", "--", "cache-puller"]
 CMD ["run"]

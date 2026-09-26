@@ -247,9 +247,58 @@ async function loadFiles() {
   renderFiles(data);
 }
 
+function renderCleanupBar(c) {
+  const bar = $("#cleanup-bar");
+  if (!c) { bar.replaceChildren(); return; }
+  const parts = [];
+  if (c.running) parts.push(el("strong", {}, "Checking for deleted files…"));
+  else if (!c.interval) parts.push("Deleted files are only removed from this list when you click the button, or right after they're deleted.");
+  else parts.push(`Deleted files are removed from this list within a minute of being deleted, and by a full check every ${span(c.interval)}.`);
+  const last = c.last;
+  if (last && !c.running) {
+    parts.push(" ");
+    if (last.skipped_reason) parts.push(el("strong", {}, `Last check ${ago(last.finished)} was skipped: ${last.skipped_reason}.`));
+    else parts.push(el("strong", {}, `Last check ${ago(last.finished)}: ${last.removed.toLocaleString()} removed.`));
+    if (last.skipped_shares && last.skipped_shares.length) parts.push(` Skipped: ${last.skipped_shares.join("; ")}.`);
+  }
+  if (c.removed_on_delete) parts.push(` ${c.removed_on_delete.toLocaleString()} removed right after deletion since the container started.`);
+  if (c.next_at && !c.running) parts.push(` Next check ${until(c.next_at)}.`);
+  bar.replaceChildren(el("span", {}, parts),
+    el("button", { class: "btn small", type: "button", disabled: c.running, onclick: cleanupNow }, "Clean up now"));
+}
+
+async function cleanupNow(e) {
+  e.target.disabled = true;
+  try {
+    const res = await api("/api/cleanup", {});
+    toast(res.message);
+  } catch (err) { showError(err); }
+  // The check runs in the background; poll until it's done.
+  const poll = async () => {
+    await refresh();
+    const c = state.overview && state.overview.cleanup;
+    if (c && c.running) setTimeout(poll, 1500);
+    else if (c && c.last) {
+      toast(c.last.skipped_reason ? `Check skipped: ${c.last.skipped_reason}`
+        : `Removed ${c.last.removed.toLocaleString()} deleted file(s) from the list.`, !!c.last.skipped_reason);
+    }
+  };
+  setTimeout(poll, 800);
+}
+
+async function forget(r, btn) {
+  btn.disabled = true;
+  try {
+    const res = await api("/api/forget", { share: r.share, relpath: r.relpath });
+    toast(res.message, !res.ok);
+  } catch (e) { showError(e); }
+  refresh();
+}
+
 function renderFiles(data) {
   $("#files-hint").textContent =
     `Score ≈ number of separate recent accesses (older ones count less). Files scoring ${data.min_score} or more are moved to the cache.`;
+  renderCleanupBar(state.overview && state.overview.cleanup);
   const table = $("#files-table");
   const head = el("thead", {}, el("tr", {},
     el("th", {}, "File"), el("th", { class: "num" }, "Score"), el("th", { class: "num hide-sm" }, "Accesses"),
@@ -262,6 +311,10 @@ function renderFiles(data) {
     if (r.state === "cold" || r.state === "candidate") {
       actions.push(el("button", { class: "btn small", type: "button", title: "Move this file to the cache now (all safety checks still apply)",
         onclick: (e) => promote(r, e.target) }, "Move to cache"));
+    }
+    if (r.state === "missing") {
+      actions.push(el("button", { class: "btn small", type: "button", title: "This file no longer exists: remove it from the list",
+        onclick: (e) => forget(r, e.target) }, "Remove from list"));
     }
     if (r.state !== "unmanaged" && r.state !== "missing" && r.reason !== "matches an exclude pattern") {
       actions.push(el("button", { class: "btn small link", type: "button", title: "Add this file to the exclude patterns",

@@ -174,6 +174,11 @@ Each file has two buttons. **Move to cache** moves it right away, whatever its
 score (all safety checks still apply). **Never move** adds it to the exclude
 patterns.
 
+Files that were deleted disappear from the list on their own (see
+[Deleted files](#deleted-files)). A file marked **Gone** can also be removed
+right away with **Remove from list**, and **Clean up now** at the top of the tab
+checks every file immediately.
+
 **Activity** is the log of every move made, skipped or failed.
 
 **Settings** has every option with an explanation. Changes apply
@@ -195,6 +200,28 @@ immediately, no restart needed. They are saved in
 
 From the command line, `docker exec cache-puller cache-puller check`
 and `... status` show the same information.
+
+## Deleted files
+
+When a file is deleted, it's removed from the list about a minute later.
+The tracker sees the deletion; the minute's delay and a check that the file is
+really gone from the pool *and* every array disk are there because the mover
+(and this app) delete a file's old copy after moving it elsewhere.
+
+A full check also runs every 24 hours (`CLEANUP_INTERVAL_HOURS`, adjustable in
+Settings, `0` turns it off) and 10 minutes after the container starts. It
+catches files deleted while the container wasn't running. It's careful not to
+mistake an unavailable disk for deleted files:
+
+- it doesn't run unless the array is started and the disks are mounted;
+- it skips a share whose pool isn't mounted, or whose folder can't be found
+  anywhere;
+- it skips a share if more than half its tracked files (and at least 50)
+  suddenly look deleted, and says so in the log and on the Files tab.
+
+Files of a share that was deleted in Unraid are forgotten too. The check looks
+up each file on the pool and the array disks, which can wake sleeping disks
+once; the *Dynamix Cache Directories* plugin avoids most of that.
 
 ## Mover integration
 
@@ -238,6 +265,7 @@ the UI take precedence. Sizes accept `K`, `M`, `G`, `T` suffixes (powers of
 | `MIN_FILE_AGE_MINUTES` | `60` | Skip files modified more recently than this. |
 | `EXCLUDE_PATTERNS` | | Globs matched against the path inside the share and the file name, e.g. `*.part,downloads/*`. |
 | `RUN_INTERVAL_MINUTES` | `60` | How often to move files. |
+| `CLEANUP_INTERVAL_HOURS` | `24` | How often to check for deleted files and remove them from the list (`0` = never). |
 | `ALLOWED_HOURS` | *(any)* | e.g. `1-6` or `22-5`: only move files during these hours. |
 | `DEMOTE_ON_PRESSURE` | `true` | Move cold promoted files back when the pool is over the limit. |
 | `VERIFY` | `hash` | `hash` = checksum re-read; `size` = size only (faster). |

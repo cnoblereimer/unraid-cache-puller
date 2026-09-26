@@ -42,6 +42,10 @@ FIELDS: list[Field] = [
           "Only show what would be moved. Turn off to start moving files."),
     Field("RUN_INTERVAL_MINUTES", "run_interval", "Run every", "general", "number",
           "How often to look for files to move.", unit="minutes", scale=60),
+    Field("CLEANUP_INTERVAL_HOURS", "cleanup_interval", "Remove deleted files from the list every", "general",
+          "number", "Checks every tracked file and forgets the ones that no longer exist on any disk or pool. "
+          "Files deleted while the app is running are also removed about a minute after deletion. "
+          "0 = never.", unit="hours", scale=3600),
     Field("ALLOWED_HOURS", "allowed_hours", "Allowed hours", "general", "hours",
           "Only move files during these hours, e.g. 1-6 or 22-5. Leave empty for any time."),
     Field("INCLUDE_SHARES", "include_shares", "Only these shares", "shares", "shares",

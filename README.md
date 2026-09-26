@@ -106,9 +106,18 @@ predictable. The container:
 5. Open `http://<your-server>:8484/` (or use **WebUI** in the Docker tab's
    container menu).
 
-To update later: `git pull` in the source folder (or unpack a new ZIP), then
-**Compose Down** → **Update Stack** → **Compose Up**. Your data and settings
-live in `/mnt/user/appdata/cache-puller` and are kept.
+To update later, get the new code (`git pull` in the source folder, or unpack
+a new ZIP), rebuild the image from the Unraid terminal, then click **Compose
+Down** and **Compose Up**:
+
+```sh
+cd /mnt/user/appdata/cache-puller/source && git pull
+docker build -t unraid-cache-puller:local .
+```
+
+Compose Up alone would keep using the old image, because it only builds when
+the image doesn't exist yet. Your data and settings live in
+`/mnt/user/appdata/cache-puller` and are kept.
 
 Plain `docker compose up -d --build` in the source folder works too.
 

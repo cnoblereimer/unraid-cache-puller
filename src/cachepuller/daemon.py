@@ -124,10 +124,4 @@ class Daemon:
         t = self.tracker
         if t is None:
             return {"active": False}
-        return {
-            "active": True,
-            "watches": t.watch_count,
-            "events": t.events_seen,
-            "overflows": t.overflows,
-            "limit_reached": t.limit_reached,
-        }
+        return {"active": True, **t.state()}

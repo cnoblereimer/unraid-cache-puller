@@ -11,10 +11,13 @@ they load from the SSD and the array disks can stay spun down.
 
 ## How it works
 
-1. **Tracking.** inotify watches every directory of each managed share on
-   every array disk (`/mnt/diskN/<share>`) and on the pool
-   (`/mnt/<pool>/<share>`). Every file open counts, including opens through
-   `/mnt/user` (shfs opens the underlying file on the disk). Opens of the same
+1. **Tracking.** fanotify watches each array disk and pool as a whole, with
+   one mark per disk, so it starts instantly and has no watch limit. Only
+   opens inside managed shares (`/mnt/diskN/<share>`, `/mnt/<pool>/<share>`)
+   are counted, including opens through `/mnt/user` (shfs opens the underlying
+   file on the disk). Without the capabilities fanotify needs, it falls back
+   to inotify, which has to find and watch every folder first (see
+   [Notes](#notes-and-limitations)). Opens of the same
    file within 15 minutes count once. Each file gets a score that works
    like a count of accesses with a 72-hour half-life. Renames (e.g. by
    Sonarr/Radarr) carry the score over.
@@ -133,6 +136,10 @@ the Docker tab choose **Add Container** → template **cache-puller**.
   on the host and whether the mover is running. Without them, the container
   refuses to move anything (unless you set `OPEN_FILE_CHECK=auto` or `off`,
   which isn't recommended).
+- The `SYS_ADMIN` and `DAC_READ_SEARCH` capabilities: for fanotify, which
+  watches whole disks at once. Without them it still works, but falls back
+  to scanning every folder at startup. The container only uses them for
+  fanotify and to turn fanotify's file handles into paths.
 - `/mnt:/mnt:rw,slave`: must be `/mnt` on both sides so the paths in the mover
   ignore list are valid on the host. `slave` makes disks mounted after the
   container started (array stop/start) visible.
@@ -242,6 +249,7 @@ the UI take precedence. Sizes accept `K`, `M`, `G`, `T` suffixes (powers of
 | `MOVER_PID_FILES` *(env only)* | `/proc/1/root/var/run/mover.pid` | Pid files that mean "mover running". |
 | `MOVER_PROCESS_NAMES` *(env only)* | `mover,age_mover` | Process names that mean "mover running". |
 | `LOG_LEVEL` *(env only)* | `INFO` | |
+| `TRACKER` *(env only)* | `auto` | `auto` = fanotify where possible, else inotify; `fanotify`; `inotify`. |
 | `UI_PORT` *(env only)* | `8080` | Web UI port inside the container; `0` disables the UI. |
 | `UI_BIND` *(env only)* | `0.0.0.0` | Address the web UI listens on. |
 | `UI_PASSWORD` *(env only)* | | Require this password for the web UI. |
@@ -249,13 +257,19 @@ the UI take precedence. Sizes accept `K`, `M`, `G`, `T` suffixes (powers of
 
 ## Notes and limitations
 
-- **inotify watch limit.** One watch per directory is needed. `cache-puller
-  check` shows the current limit; raise it on the host if the log says it was
-  reached, e.g. with the *Tips and Tweaks* plugin or
-  `sysctl fs.inotify.max_user_watches=1048576`.
-- **Startup scan.** On start the container walks the share directories on each
-  disk to set up watches. This reads directory metadata and may spin up disks
-  once.
+- **Without fanotify (inotify fallback).** Used when the container lacks
+  `SYS_ADMIN`/`DAC_READ_SEARCH`, for filesystems fanotify can't watch, or with
+  `TRACKER=inotify`. It needs one watch per folder, so on start it walks
+  every managed share on every disk. That reads directory metadata (and wakes
+  sleeping disks once), and can take a long time on big libraries. Disks are
+  scanned in parallel in the background, and the Overview shows the progress.
+  Accesses in a folder are counted as soon as that folder is watched. The
+  *Dynamix Cache Directories* plugin speeds the scan up a lot. If the log
+  says the watch limit was reached, raise it, e.g. with the *Tips and Tweaks*
+  plugin or `sysctl fs.inotify.max_user_watches=1048576`.
+- **fanotify and folder renames.** A renamed folder's files show up under the
+  new name after up to 30 seconds. File renames carry their score over; files
+  inside a renamed folder start with a fresh score.
 - Files are moved one at a time; a cycle doesn't hold up the mover for longer
   than the current file (the mover check runs before each file).
 - Demoted files go back to the disk they came from if it still has room,
@@ -285,7 +299,7 @@ Modules:
 |---|---|
 | `config.py` | environment variables |
 | `unraid.py` | share configs, disks, pools, array state |
-| `tracker.py`, `inotify.py` | access tracking |
+| `tracker.py`, `fanotify.py`, `inotify.py` | access tracking |
 | `db.py` | scores, promoted files, history |
 | `safety.py` | open-file and mover checks |
 | `transfer.py` | the verified move |

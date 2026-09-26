@@ -7,11 +7,11 @@
   <Privileged>false</Privileged>
   <Support>https://github.com/cnoblereimer/unraid-cache-puller/issues</Support>
   <Project>https://github.com/cnoblereimer/unraid-cache-puller</Project>
-  <Overview>Tracks which files on your shares are used most and safely moves them from the array to the share's cache pool (for shares with a pool as primary and the array as secondary storage). Has a web UI for status, the list of frequently used files and all settings. Starts in DRY RUN mode: review the plan in the web UI, then switch dry run off there. Needs --pid=host and SYS_PTRACE to see which files are open and whether the mover is running.</Overview>
+  <Overview>Tracks which files on your shares are used most and safely moves them from the array to the share's cache pool (for shares with a pool as primary and the array as secondary storage). Has a web UI for status, the list of frequently used files and all settings. Starts in DRY RUN mode: review the plan in the web UI, then switch dry run off there. Needs --pid=host and SYS_PTRACE to see which files are open and whether the mover is running, and SYS_ADMIN plus DAC_READ_SEARCH to watch whole disks without scanning every folder.</Overview>
   <Category>Tools: Status:Beta</Category>
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
   <Icon/>
-  <ExtraParams>--pid=host --cap-add=SYS_PTRACE</ExtraParams>
+  <ExtraParams>--pid=host --cap-add=SYS_PTRACE --cap-add=SYS_ADMIN --cap-add=DAC_READ_SEARCH</ExtraParams>
   <PostArgs/>
   <Config Name="Web UI port" Target="8080" Default="8484" Mode="tcp" Description="Port for the web UI." Type="Port" Display="always" Required="true" Mask="false">8484</Config>
   <Config Name="Web UI password" Target="UI_PASSWORD" Default="" Description="Optional. Protects the web UI (log in with any user name and this password)." Type="Variable" Display="always" Required="false" Mask="true"></Config>

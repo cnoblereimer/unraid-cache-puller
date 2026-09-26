@@ -47,7 +47,7 @@ def cmd_run(cfg: Config, store: SettingsStore) -> int:
 
     log.info("unraid-cache-puller %s starting%s", __version__, " (DRY RUN)" if cfg.dry_run else "")
     db = _open_db(cfg)
-    tracker = AccessTracker(db, cfg.access_debounce)
+    tracker = AccessTracker(db, cfg.access_debounce, mode=cfg.tracker)
     daemon = Daemon(cfg, db, store, tracker)
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: daemon.shutdown())
@@ -145,6 +145,14 @@ def cmd_check(cfg: Config) -> int:
         else:
             why = "array is not secondary" if not s.array_is_secondary else "excluded by configuration"
             line("info", f"share {s.name}: ignored ({why})")
+    if cfg.tracker != "inotify":
+        try:
+            from .fanotify import Fanotify
+            Fanotify().close()
+            line("ok", "access tracking: fanotify (whole disks, no folder scan)")
+        except OSError as exc:
+            line("warn", f"access tracking: inotify fallback, folders must be scanned first "
+                 f"(fanotify: {exc}; add --cap-add=SYS_ADMIN --cap-add=DAC_READ_SEARCH)")
     try:
         with open("/proc/sys/fs/inotify/max_user_watches") as fh:
             line("info", f"fs.inotify.max_user_watches = {fh.read().strip()}")

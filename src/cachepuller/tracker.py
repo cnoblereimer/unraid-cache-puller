@@ -1,7 +1,14 @@
 """Watch share directories on array disks and pools and count file opens.
 
-inotify watches are per-inode, so opens that go through Unraid's /mnt/user
-FUSE layer are seen too: shfs opens the underlying file on the disk.
+Two backends, chosen per share root:
+
+* fanotify (preferred): one mark per filesystem, no startup scan, no watch
+  limit. Needs CAP_SYS_ADMIN and CAP_DAC_READ_SEARCH.
+* inotify (fallback): one watch per directory, so every directory has to be
+  found first. Scans run in the background, one thread per disk.
+
+Both see opens made through Unraid's /mnt/user FUSE layer, because shfs opens
+the underlying file on the disk.
 """
 
 from __future__ import annotations
@@ -16,6 +23,7 @@ from dataclasses import dataclass
 
 from . import inotify as ino
 from .db import Database
+from .fanotify import Fanotify, FanEvent
 
 log = logging.getLogger(__name__)
 
@@ -44,14 +52,26 @@ def _join(reldir: str, name: str) -> str:
 
 
 class AccessTracker:
-    def __init__(self, db: Database, debounce: float, flush_interval: float = 30.0):
+    def __init__(self, db: Database, debounce: float, flush_interval: float = 30.0, mode: str = "auto"):
         self.db = db
         self.debounce = debounce
         self.flush_interval = flush_interval
         self._ino = ino.Inotify()
+        self._fan: Fanotify | None = None
+        if mode in ("auto", "fanotify"):
+            try:
+                self._fan = Fanotify()
+            except OSError as exc:
+                level = logging.WARNING if mode == "fanotify" else logging.INFO
+                log.log(level, "fanotify unavailable (%s); using inotify, which has to scan every "
+                        "folder first. Add --cap-add=SYS_ADMIN --cap-add=DAC_READ_SEARCH to avoid that.", exc)
         self._lock = threading.Lock()
         self._watches: dict[int, _Watch] = {}
-        self._roots: set[str] = set()
+        self._roots: set[str] = set()  # inotify roots fully scanned
+        self._fan_roots: dict[str, str] = {}  # fanotify roots -> share
+        self._fan_lookup: list[tuple[str, str]] = []  # (root, share), longest first
+        self._scan_queues: dict[int, list[tuple[str, str]]] = {}  # st_dev -> pending roots
+        self._scanning: dict[str, int] = {}  # root being scanned / queued -> dirs so far
         self._pending: dict[tuple[str, str], list[float]] = {}
         self._last_hit: dict[tuple[str, str], float] = {}
         self._suppress: dict[tuple[str, str], float] = {}
@@ -72,15 +92,104 @@ class AccessTracker:
     def limit_reached(self) -> bool:
         return self._limit_warned
 
+    @property
+    def fanotify_available(self) -> bool:
+        return self._fan is not None
+
+    def state(self) -> dict:
+        with self._lock:
+            scanning = dict(self._scanning)
+            fan_roots = sorted(self._fan_roots)
+        filesystems = set()
+        for r in fan_roots:
+            try:
+                filesystems.add(os.stat(r).st_dev)
+            except OSError:
+                pass
+        if fan_roots and (self._roots or scanning):
+            mode = "mixed"
+        elif fan_roots:
+            mode = "fanotify"
+        elif self._roots or scanning:
+            mode = "inotify"
+        else:
+            mode = "none"
+        return {
+            "mode": mode,
+            "fanotify_available": self._fan is not None,
+            "filesystems": len(filesystems),
+            "fanotify_roots": len(fan_roots),
+            "inotify_roots": len(self._roots),
+            "watches": len(self._watches),
+            "scanning": bool(scanning),
+            "scan_progress": [{"root": r, "dirs": n} for r, n in sorted(scanning.items())],
+            "events": self.events_seen,
+            "overflows": self.overflows,
+            "limit_reached": self._limit_warned,
+        }
+
     def sync_roots(self, roots: dict[str, str]) -> None:
-        """Ensure every ``{abs_share_dir: share_name}`` root is watched."""
+        """Ensure every ``{abs_share_dir: share_name}`` root is watched.
+
+        Returns quickly: fanotify marks are instant and inotify scans run in
+        background threads.
+        """
         for path, share in roots.items():
-            if path in self._roots or not os.path.isdir(path):
+            if not os.path.isdir(path):
                 continue
+            with self._lock:
+                on_inotify = path in self._roots or path in self._scanning
+            if self._fan is not None and not on_inotify:
+                try:
+                    # Re-marking every time is cheap and idempotent, and
+                    # re-arms the mark after the array is stopped and started.
+                    self._fan.mark(path)
+                except OSError as exc:
+                    log.warning("fanotify can't watch %s (%s); scanning its folders for inotify instead", path, exc)
+                else:
+                    if path not in self._fan_roots:
+                        log.info("watching %s (whole disk via fanotify, no scan needed)", path)
+                        with self._lock:
+                            self._fan_roots[path] = share
+                            self._fan_lookup = sorted(self._fan_roots.items(), key=lambda x: len(x[0]), reverse=True)
+                    continue
+            if not on_inotify:
+                self._queue_scan(path, share)
+
+    def _queue_scan(self, path: str, share: str) -> None:
+        try:
+            dev = os.stat(path).st_dev
+        except OSError:
+            return
+        with self._lock:
+            self._scanning[path] = 0
+            queue = self._scan_queues.get(dev)
+            if queue is not None:
+                queue.append((path, share))  # that disk's scanner will pick it up
+                return
+            self._scan_queues[dev] = [(path, share)]
+        # One scanner per disk: disks are scanned in parallel, but a single
+        # disk isn't made to seek between several trees at once.
+        threading.Thread(target=self._scan_disk, args=(dev,), name=f"scan-{dev}", daemon=True).start()
+
+    def _scan_disk(self, dev: int) -> None:
+        while not self._stop.is_set():
+            with self._lock:
+                queue = self._scan_queues.get(dev)
+                if not queue:
+                    self._scan_queues.pop(dev, None)
+                    return
+                path, share = queue.pop(0)
             started = time.monotonic()
-            n = self._add_tree(path, share, "")
-            self._roots.add(path)
-            log.info("watching %s (%d dirs, %.1fs)", path, n, time.monotonic() - started)
+            try:
+                n = self._add_tree(path, share, "", progress=path)
+            except Exception:
+                log.exception("scanning %s failed", path)
+                n = 0
+            with self._lock:
+                self._scanning.pop(path, None)
+                self._roots.add(path)
+            log.info("watching %s (%d folders scanned in %.0fs)", path, n, time.monotonic() - started)
 
     def _add_one(self, path: str, share: str, reldir: str) -> bool:
         try:
@@ -101,16 +210,22 @@ class AccessTracker:
             self._watches[wd] = _Watch(share, reldir, path)
         return True
 
-    def _add_tree(self, path: str, share: str, reldir: str) -> int:
+    def _add_tree(self, path: str, share: str, reldir: str, progress: str | None = None) -> int:
         count = 0
         stack = [(path, reldir)]
         while stack:
+            if self._stop.is_set():
+                break
             p, r = stack.pop()
             if not self._add_one(p, share, r):
                 if self._limit_warned:
                     break
                 continue
             count += 1
+            if progress is not None and count % 500 == 0:
+                with self._lock:
+                    if progress in self._scanning:
+                        self._scanning[progress] = count
             try:
                 with os.scandir(p) as it:
                     for entry in it:
@@ -143,14 +258,24 @@ class AccessTracker:
             self._thread.join(timeout=10)
         self.flush()
         self._ino.close()
+        if self._fan is not None:
+            self._fan.close()
+
+    def _fds(self) -> list[int]:
+        return [self._ino.fd] + ([self._fan.fd] if self._fan is not None else [])
+
+    def _read_ready(self, ready: list[int]) -> None:
+        if self._ino.fd in ready:
+            self.handle_events(self._ino.read())
+        if self._fan is not None and self._fan.fd in ready:
+            self.handle_fan_events(self._fan.read())
 
     def _run(self) -> None:
         last_flush = time.monotonic()
         while not self._stop.is_set():
             try:
-                r, _, _ = select.select([self._ino.fd], [], [], 1.0)
-                if r:
-                    self.handle_events(self._ino.read())
+                r, _, _ = select.select(self._fds(), [], [], 1.0)
+                self._read_ready(r)
                 if time.monotonic() - last_flush >= self.flush_interval:
                     self.flush()
                     last_flush = time.monotonic()
@@ -160,9 +285,38 @@ class AccessTracker:
 
     def poll(self, timeout: float = 0.0) -> None:
         """Process pending events synchronously (used by tests)."""
-        r, _, _ = select.select([self._ino.fd], [], [], timeout)
-        if r:
-            self.handle_events(self._ino.read())
+        r, _, _ = select.select(self._fds(), [], [], timeout)
+        self._read_ready(r)
+
+    def wait_for_scans(self, timeout: float = 30.0) -> None:
+        """Block until background inotify scans are done (used by tests)."""
+        deadline = time.monotonic() + timeout
+        while self._scanning and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+    def _locate(self, path: str) -> tuple[str, str] | None:
+        for root, share in self._fan_lookup:
+            if path.startswith(root + "/"):
+                return share, path[len(root) + 1:]
+        return None
+
+    def handle_fan_events(self, events: list[FanEvent], now: float | None = None) -> None:
+        now = time.time() if now is None else now
+        for ev in events:
+            self.events_seen += 1
+            if ev.kind == "overflow":
+                self.overflows += 1
+                log.warning("fanotify queue overflow; some accesses were not counted")
+                continue
+            new = self._locate(ev.path) if ev.path else None
+            if ev.kind == "open":
+                if new and not os.path.basename(new[1]).startswith(TEMP_PREFIX):
+                    self._hit(new[0], new[1], now)
+            elif ev.kind == "rename":
+                old = self._locate(ev.old_path) if ev.old_path else None
+                if old and new and old[0] == new[0] and old[1] != new[1]:
+                    self.flush()
+                    self.db.rename(new[0], old[1], new[1])
 
     def handle_events(self, events: list[ino.Event], now: float | None = None) -> None:
         now = time.time() if now is None else now

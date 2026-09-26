@@ -89,9 +89,11 @@ def test_tracker_counts_opens_and_follows_new_dirs(tmp_path):
     f = root / "tv" / "e1.mkv"
     f.write_bytes(b"x")
     db = Database(str(tmp_path / "db.sqlite"), half_life=3600)
-    tr = AccessTracker(db, debounce=0)
+    tr = AccessTracker(db, debounce=0, mode="inotify")
     tr.sync_roots({str(root): "media"})
+    tr.wait_for_scans()
     assert tr.watch_count == 2
+    assert tr.state()["mode"] == "inotify"
 
     open(f, "rb").close()
     tr.poll(1)
@@ -119,8 +121,9 @@ def test_tracker_debounce_and_rename(tmp_path):
     f = root / "a.mkv"
     f.write_bytes(b"x")
     db = Database(str(tmp_path / "db.sqlite"), half_life=3600)
-    tr = AccessTracker(db, debounce=3600)
+    tr = AccessTracker(db, debounce=3600, mode="inotify")
     tr.sync_roots({str(root): "media"})
+    tr.wait_for_scans()
     for _ in range(3):
         open(f, "rb").close()
     tr.poll(1)
@@ -130,5 +133,23 @@ def test_tracker_debounce_and_rename(tmp_path):
     tr.poll(1)
     tr.flush()
     assert [s.relpath for s in db.scores()] == ["b.mkv"]
+    tr.stop()
+    db.close()
+
+
+def test_inotify_scans_disks_in_background(tmp_path):
+    roots = {}
+    for d in ("disk1", "disk2"):
+        root = tmp_path / d / "media"
+        for i in range(30):
+            (root / f"dir{i}" / "sub").mkdir(parents=True)
+        roots[str(root)] = "media"
+    db = Database(str(tmp_path / "db.sqlite"), half_life=3600)
+    tr = AccessTracker(db, debounce=0, mode="inotify")
+    tr.sync_roots(roots)
+    tr.wait_for_scans()
+    st = tr.state()
+    assert not st["scanning"] and st["inotify_roots"] == 2
+    assert tr.watch_count == 2 * (1 + 30 * 2)
     tr.stop()
     db.close()

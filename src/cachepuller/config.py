@@ -109,6 +109,9 @@ class Config:
     mover_ignore_file: str = "/config/mover-ignore.txt"
     mover_ignore_style: str = "pool"  # "pool", "user" or "both"
 
+    # Access tracking backend: "auto" (fanotify, else inotify), "fanotify" or "inotify"
+    tracker: str = "auto"
+
     log_level: str = "INFO"
 
     @property
@@ -133,6 +136,7 @@ class Config:
             "OPEN_FILE_CHECK": "open_file_check",
             "MOVER_IGNORE_STYLE": "mover_ignore_style",
             "LOG_LEVEL": "log_level",
+            "TRACKER": "tracker",
         }
         for key, attr in str_fields.items():
             if (v := get(key)) is not None:
@@ -199,6 +203,8 @@ class Config:
             raise ConfigError("VERIFY must be 'hash' or 'size'")
         if self.open_file_check not in ("on", "auto", "off"):
             raise ConfigError("OPEN_FILE_CHECK must be 'on', 'auto' or 'off'")
+        if self.tracker not in ("auto", "fanotify", "inotify"):
+            raise ConfigError("TRACKER must be 'auto', 'fanotify' or 'inotify'")
         if self.mover_ignore_style not in ("pool", "user", "both"):
             raise ConfigError("MOVER_IGNORE_STYLE must be 'pool', 'user' or 'both'")
         bad = set(self.share_modes) - {"yes", "prefer"}

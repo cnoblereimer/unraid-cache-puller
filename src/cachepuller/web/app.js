@@ -138,8 +138,17 @@ function renderOverview(o) {
     stat(o.counts.hot.toLocaleString(), `frequently used (score ≥ ${o.min_score})`),
     stat(o.counts.tracked.toLocaleString(), "files seen"),
     stat(o.counts.promoted.toLocaleString(), `moved to cache (${bytes(o.counts.promoted_bytes)})`),
-    stat(t.active ? t.watches.toLocaleString() : "–", "folders watched"));
+    trackingStat(t));
   const trackerWarn = [];
+  if (t.active && t.scanning) {
+    const dirs = t.scan_progress.reduce((n, p) => n + p.dirs, 0);
+    trackerWarn.push(el("p", { class: "hint" },
+      `Scanning folders so accesses in them can be counted: ${dirs.toLocaleString()} so far on ${t.scan_progress.length} share folder(s). `,
+      t.fanotify_available ? "" : "Give the container the SYS_ADMIN and DAC_READ_SEARCH capabilities to skip this scan entirely."));
+  }
+  if (t.active && t.mode === "inotify" && !t.scanning && !t.fanotify_available) {
+    trackerWarn.push(el("p", { class: "hint" }, "Tip: with the SYS_ADMIN and DAC_READ_SEARCH capabilities, whole disks are watched instantly instead of folder by folder."));
+  }
   if (t.limit_reached) trackerWarn.push(el("p", { class: "hint" }, "⚠ The inotify watch limit was reached, so some folders aren't watched. Raise fs.inotify.max_user_watches on the host."));
   if (t.overflows) trackerWarn.push(el("p", { class: "hint" }, `⚠ ${t.overflows} event queue overflow(s): some accesses were missed.`));
 
@@ -197,6 +206,14 @@ function storageText(s) {
   if (s.use_cache === "only") return `${s.pool} only`;
   const dir = s.use_cache === "yes" ? `${s.pool} → ${s.secondary}` : `${s.secondary} → ${s.pool}`;
   return `${s.pool} + ${s.secondary} (mover ${dir})`;
+}
+
+function trackingStat(t) {
+  if (!t.active) return stat("–", "watching");
+  if (t.mode === "fanotify") return stat(t.filesystems.toLocaleString(), `disk${t.filesystems === 1 ? "" : "s"} watched (whole disk)`);
+  if (t.mode === "mixed") return stat(`${t.filesystems} + ${t.watches.toLocaleString()}`, "whole disks + single folders watched");
+  if (t.scanning) return stat(t.watches.toLocaleString(), "folders watched (scanning…)");
+  return stat(t.watches.toLocaleString(), "folders watched");
 }
 
 function stat(value, label) {

@@ -14,7 +14,9 @@ services:
     # whether the mover is running. Without it, nothing is ever moved.
     pid: host
     cap_add:
-      - SYS_PTRACE
+      - SYS_PTRACE        # read which files other processes have open
+      - SYS_ADMIN         # fanotify: watch whole disks, no folder scan at startup
+      - DAC_READ_SEARCH   # fanotify: turn events into file paths
     ports:
       - "8484:8080"           # web UI (change 8484 if it's taken)
     volumes:

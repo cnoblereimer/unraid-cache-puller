@@ -41,6 +41,7 @@ class Api:
 
     def __init__(self, daemon: Daemon):
         self.d = daemon
+        self._checks: dict[tuple[str, str], tuple[float, int, dict]] = {}
 
     # -- read ----------------------------------------------------------------
 
@@ -110,39 +111,115 @@ class Api:
             "mover_ignore_file": cfg.mover_ignore_file,
         }
 
-    def files(self, q: str = "", hot_only: bool = False, limit: int = 100, offset: int = 0) -> dict:
+    SORT_KEYS = ("score", "hits", "last_access", "path", "size")
+    STATES = ("pool", "candidate", "cold", "blocked", "missing", "unmanaged")
+    CHECK_TTL = 600.0
+
+    def _file_info(self, r, ctx: dict) -> dict:
+        """Where a file is and what will happen to it, cached briefly.
+
+        Checking means looking the file up on the pool and array disks, so
+        results are reused until something changes (a run, a move, a cleanup
+        or a settings change bumps the daemon's generation) or they expire.
+        """
+        key = (r.share, r.relpath)
+        hit = self._checks.get(key)
+        if hit is not None and hit[1] == ctx["gen"] and ctx["now"] - hit[0] < self.CHECK_TTL:
+            return hit[2]
+        share = ctx["managed"].get(r.share)
+        if share is None:
+            info = {"state": "unmanaged", "reason": "share is not managed", "location": "", "size": 0}
+        else:
+            chk = self.d.service.check_file(share, r.relpath, r.score, ctx["disks"], ctx["now"])
+            info = {"state": chk.state, "reason": chk.reason, "location": chk.location, "size": chk.size}
+            p = ctx["promoted"].get(key)
+            if chk.state == "pool" and p is not None:
+                info["reason"] = "moved to the pool by Cache Puller"
+                info["size"] = p.size
+        if len(self._checks) > 250000:
+            self._checks.clear()
+        self._checks[key] = (ctx["now"], ctx["gen"], info)
+        return info
+
+    def files(self, q: str = "", hot_only: bool = False, limit: int = 100, offset: int = 0,
+              share: str = "", status: str = "", where: str = "", since: float = 0,
+              sort: str = "score", direction: str = "") -> dict:
         d = self.d
         cfg = d.cfg
         now = time.time()
+        if sort not in self.SORT_KEYS:
+            raise ValueError(f"sort must be one of {', '.join(self.SORT_KEYS)}")
+        if status and status not in self.STATES:
+            raise ValueError(f"status must be one of {', '.join(self.STATES)}")
+        if direction not in ("", "asc", "desc"):
+            raise ValueError("direction must be asc or desc")
+        descending = direction == "desc" if direction else sort != "path"
         managed = {s.name: s for s in d.service.shares()}
         disks = d.service.disks()
-        promoted = {(p.share, p.relpath): p for p in d.db.promoted()}
+        ctx = {"now": now, "gen": d.generation, "managed": managed, "disks": disks,
+               "promoted": {(p.share, p.relpath): p for p in d.db.promoted()}}
+        started = time.monotonic()
+
         rows = d.db.scores(now=now)
+        tracked_shares = sorted({r.share for r in rows}, key=str.lower)
+        # Cheap filters first: they only use what's in the database.
         if hot_only:
             rows = [r for r in rows if is_hot(r.score, cfg.min_score)]
+        if share:
+            rows = [r for r in rows if r.share == share]
+        if since:
+            rows = [r for r in rows if now - r.last_access <= since]
         if q:
             needle = q.lower()
             rows = [r for r in rows if needle in f"{r.share}/{r.relpath}".lower()]
+
+        # Filters and sorts that need each file looked up on disk.
+        checked = bool(status or where or sort == "size")
+        if checked:
+            infos = {id(r): self._file_info(r, ctx) for r in rows}
+            if status:
+                rows = [r for r in rows if infos[id(r)]["state"] == status]
+            if where:
+                def at(loc: str) -> bool:
+                    if where == "array":
+                        return loc.startswith("disk") or loc == "several disks"
+                    return loc == where
+                rows = [r for r in rows if at(infos[id(r)]["location"])]
+
+        def path_key(r):
+            return f"{r.share}/{r.relpath}".lower()
+
+        rows.sort(key=path_key)  # stable tie-breaker for the sort below
+        if sort == "score":
+            rows.sort(key=lambda r: r.score, reverse=descending)
+        elif sort == "hits":
+            rows.sort(key=lambda r: r.hits, reverse=descending)
+        elif sort == "last_access":
+            rows.sort(key=lambda r: r.last_access, reverse=descending)
+        elif sort == "path":
+            if descending:
+                rows.reverse()
+        elif sort == "size":
+            rows.sort(key=lambda r: infos[id(r)]["size"], reverse=descending)
+
         total = len(rows)
         limit = max(1, min(limit, 500))
+        offset = max(0, offset)
         out = []
         for r in rows[offset: offset + limit]:
-            share = managed.get(r.share)
-            if share is None:
-                state, reason, location, size = "unmanaged", "share is not managed", "", 0
-            else:
-                chk = d.service.check_file(share, r.relpath, r.score, disks, now)
-                state, reason, location, size = chk.state, chk.reason, chk.location, chk.size
-                if state == "pool" and (r.share, r.relpath) in promoted:
-                    reason = "moved to the pool by Cache Puller"
-                    size = promoted[(r.share, r.relpath)].size
+            info = self._file_info(r, ctx)
             out.append({
                 "share": r.share, "relpath": r.relpath, "score": round(r.score, 2),
-                "hits": r.hits, "last_access": r.last_access, "state": state,
-                "reason": reason, "location": location, "size": size,
+                "hits": r.hits, "last_access": r.last_access, **info,
                 "hot": is_hot(r.score, cfg.min_score),
             })
-        return {"total": total, "offset": offset, "limit": limit, "rows": out, "min_score": cfg.min_score}
+        pools = sorted({s.pool for s in managed.values() if s.pool})
+        return {
+            "total": total, "offset": offset, "limit": limit, "rows": out, "min_score": cfg.min_score,
+            "sort": sort, "direction": "desc" if descending else "asc",
+            "checked": checked, "elapsed": round(time.monotonic() - started, 2),
+            "options": {"shares": tracked_shares, "pools": pools, "disks": disks},
+        }
 
     def activity(self, limit: int = 100) -> dict:
         rows = self.d.db.history(max(1, min(limit, 1000)))
@@ -269,7 +346,10 @@ def make_handler(api: Api, password: str | None):
                 if url.path == "/api/files":
                     return self._json(HTTPStatus.OK, api.files(
                         q=qs.get("q", ""), hot_only=qs.get("hot") == "1",
-                        limit=int(qs.get("limit", 100)), offset=int(qs.get("offset", 0))))
+                        limit=int(qs.get("limit", 100)), offset=int(qs.get("offset", 0)),
+                        share=qs.get("share", ""), status=qs.get("status", ""),
+                        where=qs.get("where", ""), since=float(qs.get("since", 0) or 0),
+                        sort=qs.get("sort", "score"), direction=qs.get("dir", "")))
                 if url.path == "/api/activity":
                     return self._json(HTTPStatus.OK, api.activity(int(qs.get("limit", 100))))
                 if url.path == "/api/settings":

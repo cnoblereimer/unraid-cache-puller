@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>cache-puller</Name>
+  <Repository>ghcr.io/cnoblereimer/unraid-cache-puller:latest</Repository>
+  <Registry>https://github.com/cnoblereimer/unraid-cache-puller/pkgs/container/unraid-cache-puller</Registry>
+  <Network>none</Network>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/cnoblereimer/unraid-cache-puller/issues</Support>
+  <Project>https://github.com/cnoblereimer/unraid-cache-puller</Project>
+  <Overview>Tracks which files on your shares are used most and safely moves them from the array to the share's cache pool (for shares with a pool as primary and the array as secondary storage). Starts in DRY RUN mode: check the log, then set DRY_RUN to false. Needs --pid=host and SYS_PTRACE to see which files are open and whether the mover is running.</Overview>
+  <Category>Tools: Status:Beta</Category>
+  <ExtraParams>--pid=host --cap-add=SYS_PTRACE</ExtraParams>
+  <PostArgs/>
+  <Config Name="Mount root" Target="/mnt" Default="/mnt" Mode="rw,slave" Description="Must be /mnt mapped to /mnt, so array disks, pools and paths in the mover ignore list match the host." Type="Path" Display="always" Required="true" Mask="false">/mnt</Config>
+  <Config Name="Appdata" Target="/config" Default="/mnt/user/appdata/cache-puller" Mode="rw" Description="Database, mover ignore list and transfer journal." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/cache-puller</Config>
+  <Config Name="Share configs" Target="/boot/config/shares" Default="/boot/config/shares" Mode="ro" Description="Unraid share settings (read-only)." Type="Path" Display="advanced" Required="true" Mask="false">/boot/config/shares</Config>
+  <Config Name="emhttp state" Target="/var/local/emhttp" Default="/var/local/emhttp" Mode="ro" Description="Array/parity state (read-only)." Type="Path" Display="advanced" Required="true" Mask="false">/var/local/emhttp</Config>
+  <Config Name="Dry run" Target="DRY_RUN" Default="true" Description="true = only log what would be moved. Set to false once you're happy with the plan." Type="Variable" Display="always" Required="true" Mask="false">true</Config>
+  <Config Name="Include shares" Target="INCLUDE_SHARES" Default="" Description="Comma separated. Empty = every share whose secondary storage is the array." Type="Variable" Display="always" Required="false" Mask="false"></Config>
+  <Config Name="Exclude shares" Target="EXCLUDE_SHARES" Default="" Description="Comma separated shares to never touch." Type="Variable" Display="always" Required="false" Mask="false"></Config>
+  <Config Name="Cache max usage %" Target="CACHE_MAX_PERCENT" Default="80" Description="Never fill the pool above this. Cold promoted files are moved back when it's exceeded." Type="Variable" Display="always" Required="true" Mask="false">80</Config>
+  <Config Name="Cache min free" Target="CACHE_MIN_FREE" Default="50G" Description="Always keep at least this much free on the pool." Type="Variable" Display="always" Required="true" Mask="false">50G</Config>
+  <Config Name="Min score" Target="MIN_SCORE" Default="3" Description="How 'hot' a file must be. Roughly the number of separate accesses, decaying with the half-life." Type="Variable" Display="always" Required="true" Mask="false">3</Config>
+  <Config Name="Half-life (hours)" Target="HALF_LIFE_HOURS" Default="72" Description="How fast old accesses stop counting." Type="Variable" Display="advanced" Required="false" Mask="false">72</Config>
+  <Config Name="Run interval (minutes)" Target="RUN_INTERVAL_MINUTES" Default="60" Description="How often to move files." Type="Variable" Display="advanced" Required="false" Mask="false">60</Config>
+  <Config Name="Allowed hours" Target="ALLOWED_HOURS" Default="" Description="Only move files during these hours, e.g. 1-6. Empty = any time." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+  <Config Name="Mover ignore file" Target="MOVER_IGNORE_FILE" Default="/config/mover-ignore.txt" Description="File list of hot files on the pool, for the Mover Tuning plugin's 'ignore files listed in a text file' option (host path: your appdata folder). Empty = disabled." Type="Variable" Display="advanced" Required="false" Mask="false">/config/mover-ignore.txt</Config>
+  <Config Name="Exclude patterns" Target="EXCLUDE_PATTERNS" Default="*.partial,*.!qB,*.part,.Recycle.Bin/*" Description="Comma separated glob patterns (matched against the path inside the share and the file name)." Type="Variable" Display="advanced" Required="false" Mask="false">*.partial,*.!qB,*.part,.Recycle.Bin/*</Config>
+  <Config Name="Min file size" Target="MIN_FILE_SIZE" Default="0" Description="Skip smaller files, e.g. 1M." Type="Variable" Display="advanced" Required="false" Mask="false">0</Config>
+  <Config Name="Max file size" Target="MAX_FILE_SIZE" Default="0" Description="Skip larger files, e.g. 100G. 0 = no limit." Type="Variable" Display="advanced" Required="false" Mask="false">0</Config>
+  <Config Name="Max GB per run" Target="MAX_BYTES_PER_RUN" Default="200G" Description="Upper bound on data moved per cycle." Type="Variable" Display="advanced" Required="false" Mask="false">200G</Config>
+  <Config Name="Verify" Target="VERIFY" Default="hash" Description="hash = re-read and checksum every copy before deleting the original; size = compare size only." Type="Variable" Display="advanced" Required="false" Mask="false">hash</Config>
+  <Config Name="Share modes" Target="SHARE_MODES" Default="yes,prefer" Description="Which mover directions to manage: yes (pool to array), prefer (array to pool)." Type="Variable" Display="advanced" Required="false" Mask="false">yes,prefer</Config>
+  <Config Name="Log level" Target="LOG_LEVEL" Default="INFO" Description="DEBUG, INFO, WARNING" Type="Variable" Display="advanced" Required="false" Mask="false">INFO</Config>
+</Container>

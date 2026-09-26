@@ -1,0 +1,7 @@
+.git
+.github
+tests
+unraid
+**/__pycache__
+**/*.pyc
+.pytest_cache

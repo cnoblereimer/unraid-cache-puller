@@ -68,6 +68,10 @@ class AccessTracker:
     def watch_count(self) -> int:
         return len(self._watches)
 
+    @property
+    def limit_reached(self) -> bool:
+        return self._limit_warned
+
     def sync_roots(self, roots: dict[str, str]) -> None:
         """Ensure every ``{abs_share_dir: share_name}`` root is watched."""
         for path, share in roots.items():

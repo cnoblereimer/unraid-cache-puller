@@ -60,6 +60,12 @@ class Promoted:
     promoted_at: float
 
 
+def is_hot(score: float, min_score: float) -> bool:
+    """Compare at the precision scores are shown with, so a file that was just
+    opened 3 times (score 2.9999...) counts as reaching a threshold of 3."""
+    return round(score, 2) >= min_score
+
+
 def decayed(score: float, score_ts: float, now: float, half_life: float) -> float:
     if now <= score_ts:
         return score

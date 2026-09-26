@@ -13,14 +13,14 @@ import logging
 import os
 import signal
 import sys
-import threading
 import time
 
 from . import __version__
 from .config import Config, ConfigError
-from .db import Database
+from .db import Database, is_hot
 from .safety import host_pid_visible, mover_running
 from .service import PoolUsage, Service, human
+from .settings import SettingsStore
 from .unraid import array_state, load_shares, pool_mounted
 
 log = logging.getLogger("cachepuller")
@@ -40,36 +40,32 @@ def _open_db(cfg: Config) -> Database:
     return Database(cfg.db_path, cfg.half_life)
 
 
-def cmd_run(cfg: Config) -> int:
+def cmd_run(cfg: Config, store: SettingsStore) -> int:
+    from .daemon import Daemon
     from .tracker import AccessTracker  # needs inotify, only import when running
+    from .web import start_web
 
     log.info("unraid-cache-puller %s starting%s", __version__, " (DRY RUN)" if cfg.dry_run else "")
     db = _open_db(cfg)
-    stop = threading.Event()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        signal.signal(sig, lambda *_: stop.set())
-
     tracker = AccessTracker(db, cfg.access_debounce)
-    service = Service(cfg, db, suppress=tracker.suppress, stop=stop)
-    service.journal.recover()
-    _warn_about_setup(cfg, service)
-    tracker.start()
+    daemon = Daemon(cfg, db, store, tracker)
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, lambda *_: daemon.shutdown())
 
-    next_cycle = time.time() + min(cfg.run_interval, 300)
+    daemon.service.journal.recover()
+    _warn_about_setup(cfg, daemon.service)
+    tracker.start()
+    server = None
+    port = int(os.environ.get("UI_PORT", "8080") or 0)
+    if port:
+        server = start_web(daemon, os.environ.get("UI_BIND", "0.0.0.0"), port,
+                           os.environ.get("UI_PASSWORD") or None)
     try:
-        while not stop.is_set():
-            try:
-                tracker.sync_roots(service.watch_roots())
-                if time.time() >= next_cycle:
-                    tracker.flush()
-                    service.run_cycle()
-                    next_cycle = time.time() + cfg.run_interval
-            except Exception:
-                log.exception("cycle failed")
-                next_cycle = time.time() + cfg.run_interval
-            stop.wait(min(60, max(1, next_cycle - time.time())))
+        daemon.run_forever()
     finally:
         log.info("shutting down")
+        if server is not None:
+            server.shutdown()
         tracker.stop()
         db.close()
     return 0
@@ -163,7 +159,7 @@ def cmd_status(cfg: Config, limit: int) -> int:
     db = _open_db(cfg)
     now = time.time()
     scores = db.scores(now=now)
-    hot = [f for f in scores if f.score >= cfg.min_score]
+    hot = [f for f in scores if is_hot(f.score, cfg.min_score)]
     print(f"tracked files: {len(scores)}, hot (score >= {cfg.min_score:g}): {len(hot)}\n")
     print(f"{'score':>7} {'hits':>5}  {'last access':<19}  file")
     for f in scores[:limit]:
@@ -194,11 +190,18 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        cfg = Config.from_env()
+        base = Config.from_env()
     except (ConfigError, ValueError) as exc:
         print(f"configuration error: {exc}", file=sys.stderr)
         return 2
-    _setup_logging(cfg.log_level)
+    _setup_logging(base.log_level)
+    os.makedirs(base.config_dir, exist_ok=True)
+    store = SettingsStore(os.path.join(base.config_dir, "settings.json"))
+    try:
+        cfg = store.load()
+    except (ConfigError, ValueError) as exc:
+        log.error("ignoring saved settings in %s: %s", store.path, exc)
+        cfg = base
 
     if args.cmd == "once":
         return cmd_once(cfg)
@@ -206,7 +209,7 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_check(cfg)
     if args.cmd == "status":
         return cmd_status(cfg, args.limit)
-    return cmd_run(cfg)
+    return cmd_run(cfg, store)
 
 
 if __name__ == "__main__":

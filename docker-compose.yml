@@ -1,0 +1,30 @@
+# Cache Puller for Unraid.
+#
+# With the Compose Manager plugin: create a new stack, paste this file, and
+# change "build:" below to the folder where you put this repository, e.g.
+#   build: /mnt/user/appdata/cache-puller/source
+# Then "Compose Up". The web UI is at http://<your-server>:8484/
+services:
+  cache-puller:
+    build: .
+    image: unraid-cache-puller:local
+    container_name: cache-puller
+    restart: unless-stopped
+    # Required: lets the container see which files are open on the host and
+    # whether the mover is running. Without it, nothing is ever moved.
+    pid: host
+    cap_add:
+      - SYS_PTRACE
+    ports:
+      - "8484:8080"           # web UI (change 8484 if it's taken)
+    volumes:
+      - /mnt:/mnt:rw,slave     # must be /mnt on both sides
+      - /mnt/user/appdata/cache-puller:/config
+      - /boot/config/shares:/boot/config/shares:ro
+      - /var/local/emhttp:/var/local/emhttp:ro
+    environment:
+      TZ: America/New_York     # your time zone (used for "Allowed hours")
+      DRY_RUN: "true"          # starting default; switch it off in the web UI
+      # UI_PASSWORD: change-me # optional: protect the web UI (any user name)
+    labels:
+      net.unraid.docker.webui: "http://[IP]:[PORT:8484]/"

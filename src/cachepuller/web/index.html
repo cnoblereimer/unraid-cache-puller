@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cache Puller</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="favicon.svg" alt="" width="28" height="28">
+      <div>
+        <h1>Cache Puller</h1>
+        <div class="sub" id="run-info">Loading…</div>
+      </div>
+    </div>
+    <div class="top-actions">
+      <span class="badge" id="mode-badge">…</span>
+      <button class="btn primary" id="run-now" type="button">Run now</button>
+    </div>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-tab="overview" class="active">Overview</button>
+    <button role="tab" data-tab="files">Files</button>
+    <button role="tab" data-tab="activity">Activity</button>
+    <button role="tab" data-tab="settings">Settings</button>
+  </nav>
+
+  <main>
+    <section id="tab-overview" class="tab active"></section>
+    <section id="tab-files" class="tab">
+      <div class="toolbar">
+        <input type="search" id="file-search" placeholder="Search files…" aria-label="Search files">
+        <label class="check"><input type="checkbox" id="hot-only"> Only frequently used</label>
+      </div>
+      <p class="hint" id="files-hint"></p>
+      <div class="table-wrap"><table class="data stack" id="files-table"></table></div>
+      <div class="pager" id="files-pager"></div>
+    </section>
+    <section id="tab-activity" class="tab">
+      <p class="hint">Every move this app made or skipped, newest first.</p>
+      <div class="table-wrap"><table class="data stack" id="activity-table"></table></div>
+    </section>
+    <section id="tab-settings" class="tab">
+      <form id="settings-form" autocomplete="off"></form>
+    </section>
+  </main>
+
+  <div class="savebar" id="savebar" hidden>
+    <span id="savebar-text">Unsaved changes</span>
+    <div>
+      <button class="btn" type="button" id="discard">Discard</button>
+      <button class="btn primary" type="button" id="save">Save changes</button>
+    </div>
+  </div>
+  <div id="toasts" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>

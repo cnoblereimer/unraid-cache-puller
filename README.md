@@ -47,8 +47,9 @@ You can narrow this down with `INCLUDE_SHARES`, `EXCLUDE_SHARES` and `SHARE_MODE
 Moving files around underneath a running server has to be boring and
 predictable. The container:
 
-- **Starts in dry-run mode.** Nothing is changed until you set `DRY_RUN=false`.
-  In dry-run the log (and `cache-puller status`) shows what would happen.
+- **Starts in dry-run mode.** Nothing is changed until you switch dry run off
+  (in the web UI under Settings, or with `DRY_RUN=false`).
+  In dry-run the web UI (and the log) shows what would happen.
 - **Never deletes the original before the copy is verified.** Each move copies
   into a hidden temp file next to the destination, fsyncs it, drops it from
   the page cache and re-reads it from disk to compare a BLAKE2 checksum. Only then
@@ -79,55 +80,105 @@ predictable. The container:
 - **Only moves back what it moved.** Pressure relief (demotion) only touches files
   this container promoted and that have gone cold, never your other files on
   the pool.
-- **Needs no network.** The template sets `--network=none`.
 
 ## Installation
 
-### Unraid template
+### With the Compose Manager plugin (builds the image on your server)
+
+1. Put this repository on the server, e.g. in
+   `/mnt/user/appdata/cache-puller/source`. From the Unraid terminal:
+
+   ```sh
+   mkdir -p /mnt/user/appdata/cache-puller
+   cd /mnt/user/appdata/cache-puller
+   git clone https://github.com/cnoblereimer/unraid-cache-puller.git source
+   ```
+
+   No `git` on your server? Download the repository as a ZIP from GitHub
+   (*Code → Download ZIP*) and unpack it into that folder, e.g. over SMB.
+2. In the Docker tab, under **Compose**, click **Add New Stack**, name it
+   `cache-puller`, and choose **Edit Stack → Compose File**.
+3. Paste the contents of [`docker-compose.yml`](docker-compose.yml), and change
+   `build: .` to `build: /mnt/user/appdata/cache-puller/source`. Set `TZ` to
+   your time zone. Change the `8484` port if it's already in use.
+4. Save, then click **Compose Up**. The first start builds the image, which
+   takes a minute.
+5. Open `http://<your-server>:8484/` (or use **WebUI** in the Docker tab's
+   container menu).
+
+To update later: `git pull` in the source folder (or unpack a new ZIP), then
+**Compose Down** → **Update Stack** → **Compose Up**. Your data and settings
+live in `/mnt/user/appdata/cache-puller` and are kept.
+
+Plain `docker compose up -d --build` in the source folder works too.
+
+### Unraid template (once an image is published)
 
 Copy `unraid/cache-puller.xml` to
 `/boot/config/plugins/dockerMan/templates-user/my-cache-puller.xml`, then in
 the Docker tab choose **Add Container** → template **cache-puller**.
 
-### Manual `docker run`
+### What the container needs, and why
 
-```sh
-docker run -d --name cache-puller \
-  --pid=host --cap-add=SYS_PTRACE --network=none \
-  -v /mnt:/mnt:rw,slave \
-  -v /mnt/user/appdata/cache-puller:/config \
-  -v /boot/config/shares:/boot/config/shares:ro \
-  -v /var/local/emhttp:/var/local/emhttp:ro \
-  -e DRY_RUN=true \
-  ghcr.io/cnoblereimer/unraid-cache-puller:latest
-```
-
-Why each piece is needed:
-
-- `--pid=host --cap-add=SYS_PTRACE`: to see which files are open on the host and
-  whether the mover is running. Without it the container refuses to move
-  anything (unless you set `OPEN_FILE_CHECK=auto` or `off`, which isn't recommended).
+- `pid: host` and the `SYS_PTRACE` capability: to see which files are open
+  on the host and whether the mover is running. Without them, the container
+  refuses to move anything (unless you set `OPEN_FILE_CHECK=auto` or `off`,
+  which isn't recommended).
 - `/mnt:/mnt:rw,slave`: must be `/mnt` on both sides so the paths in the mover
-  ignore list are valid on the host; `slave` makes disks mounted after the
+  ignore list are valid on the host. `slave` makes disks mounted after the
   container started (array stop/start) visible.
 - `/boot/config/shares` and `/var/local/emhttp` (read-only): share settings and
   array/parity state.
+- A port for the web UI. The UI is meant for your LAN. Set `UI_PASSWORD` to
+  require a password (any user name works).
 
-To build the image yourself: `docker build -t unraid-cache-puller .`
+## Using the web UI
 
-### First run
+![Overview](docs/overview.png)
 
-```sh
-docker exec cache-puller cache-puller check    # is everything visible and safe?
-docker logs -f cache-puller                    # what would be moved (dry run)
-docker exec cache-puller cache-puller status   # hottest files, recent actions
-```
+**Overview** shows whether it's safe to move files right now (array
+started, no parity check, mover idle, open-file check working), how many
+files are being tracked, what the last run did, how full each cache pool is
+(including how much of it Cache Puller put there), and which shares are
+managed.
 
-The container knows nothing about past usage when it first starts, so it
-needs to watch for a while (a few days is best) before it has a useful picture.
-Once the plan in the log looks right, set `DRY_RUN=false`.
+**Files** lists every file that has been opened, most-used first, with its
+score, where it is now (which disk, or the cache), and what will happen to it:
 
-`docker exec cache-puller cache-puller once` runs a single cycle right away.
+| Status | Meaning |
+|---|---|
+| **Will move** | Used often enough; moved to the cache on the next run |
+| **On array** | Not used often enough (yet) |
+| **On cache** | Already on the pool |
+| **Won't move** | Skipped for a safety reason, which is shown (hard-linked, excluded, modified recently, …) |
+
+![Files](docs/files.png)
+
+Each file has two buttons. **Move to cache** moves it right away, whatever its
+score (all safety checks still apply). **Never move** adds it to the exclude
+patterns.
+
+**Activity** is the log of every move made, skipped or failed.
+
+**Settings** has every option with an explanation. Changes apply
+immediately, no restart needed. They are saved in
+`/config/settings.json` and override the container's environment variables.
+**Reset all to container defaults** removes them.
+
+### First steps
+
+1. Leave **Dry run** on. The container knows nothing about past usage when it
+   first starts, so let it watch for a few days.
+2. Check **Overview**: every safety check should be green, and the shares you
+   expect should say *Managed*.
+3. Look at **Files** (tick *Only frequently used*): that's the plan. Adjust the
+   minimum score, exclude patterns or shares in **Settings** if needed.
+4. Set up the [mover integration](#mover-integration) for `yes` shares.
+5. Switch **Dry run** off in **Settings**. Use **Run now** in the top bar
+   if you don't want to wait for the next scheduled run.
+
+From the command line, `docker exec cache-puller cache-puller check`
+and `... status` show the same information.
 
 ## Mover integration
 
@@ -149,8 +200,10 @@ anyway, and this container just makes sure the hot ones get there first.
 
 ## Configuration
 
-All settings are environment variables. Sizes accept `K`, `M`, `G`, `T`
-suffixes (powers of 1024).
+Everything below can be changed in the web UI, except the rows marked
+*env only*. Environment variables set the starting values, and values saved in
+the UI take precedence. Sizes accept `K`, `M`, `G`, `T` suffixes (powers of
+1024).
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -172,14 +225,18 @@ suffixes (powers of 1024).
 | `ALLOWED_HOURS` | *(any)* | e.g. `1-6` or `22-5`: only move files during these hours. |
 | `DEMOTE_ON_PRESSURE` | `true` | Move cold promoted files back when the pool is over the limit. |
 | `VERIFY` | `hash` | `hash` = checksum re-read; `size` = size only (faster). |
-| `OPEN_FILE_CHECK` | `on` | `on` = refuse to move without host process visibility; `auto` = check if possible; `off`. |
-| `SKIP_DURING_PARITY` | `true` | Don't move during parity check/rebuild. |
-| `REQUIRE_ARRAY_STATE` | `true` | Don't move if the array state can't be read. |
-| `MOVER_IGNORE_FILE` | `/config/mover-ignore.txt` | Empty disables it. |
+| `OPEN_FILE_CHECK` *(env only)* | `on` | `on` = refuse to move without host process visibility; `auto` = check if possible; `off`. |
+| `SKIP_DURING_PARITY` *(env only)* | `true` | Don't move during parity check/rebuild. |
+| `REQUIRE_ARRAY_STATE` *(env only)* | `true` | Don't move if the array state can't be read. |
+| `MOVER_IGNORE_FILE` *(env only)* | `/config/mover-ignore.txt` | Empty disables it. |
 | `MOVER_IGNORE_STYLE` | `pool` | `pool`, `user` or `both` path style. |
-| `MOVER_PID_FILES` | `/proc/1/root/var/run/mover.pid` | Pid files that mean "mover running". |
-| `MOVER_PROCESS_NAMES` | `mover,age_mover` | Process names that mean "mover running". |
-| `LOG_LEVEL` | `INFO` | |
+| `MOVER_PID_FILES` *(env only)* | `/proc/1/root/var/run/mover.pid` | Pid files that mean "mover running". |
+| `MOVER_PROCESS_NAMES` *(env only)* | `mover,age_mover` | Process names that mean "mover running". |
+| `LOG_LEVEL` *(env only)* | `INFO` | |
+| `UI_PORT` *(env only)* | `8080` | Web UI port inside the container; `0` disables the UI. |
+| `UI_BIND` *(env only)* | `0.0.0.0` | Address the web UI listens on. |
+| `UI_PASSWORD` *(env only)* | | Require this password for the web UI. |
+| `TZ` *(env only)* | `UTC` | Time zone, used for `ALLOWED_HOURS` and log times. |
 
 ## Notes and limitations
 
@@ -204,7 +261,16 @@ pip install pytest
 python -m pytest
 ```
 
-The code is plain Python 3.11+ with no runtime dependencies:
+The code is plain Python 3.11+ with no runtime dependencies. To try the UI
+without Unraid, point it at a fake layout:
+
+```sh
+MNT_ROOT=/tmp/fake/mnt SHARES_CFG_DIR=/tmp/fake/shares EMHTTP_DIR=/tmp/fake/emhttp \
+CONFIG_DIR=/tmp/fake/config REQUIRE_MOUNTS=false OPEN_FILE_CHECK=auto \
+PYTHONPATH=src python -m cachepuller run
+```
+
+Modules:
 
 | Module | Purpose |
 |---|---|
@@ -215,4 +281,7 @@ The code is plain Python 3.11+ with no runtime dependencies:
 | `safety.py` | open-file and mover checks |
 | `transfer.py` | the verified move |
 | `service.py` | planning and running a cycle |
+| `daemon.py` | run loop, live settings reload |
+| `settings.py` | settings editable in the UI |
+| `web.py`, `web/` | web UI (JSON API + plain HTML/CSS/JS, no build step) |
 | `cli.py` | `run`, `once`, `check`, `status` |

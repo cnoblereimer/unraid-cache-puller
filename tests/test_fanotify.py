@@ -111,3 +111,14 @@ def test_does_not_keep_files_open_on_disk(root, tmp_path):
     assert not [p for p in open_paths if p.startswith(disk)]
     tr.stop()
     db.close()
+
+
+def test_reports_deleted_files(root, tmp_path):
+    db = Database(str(tmp_path / "db.sqlite"), half_life=3600)
+    tr = AccessTracker(db, debounce=0, mode="fanotify")
+    tr.sync_roots({str(root): "media"})
+    other_process(f"import os; os.unlink({str(root / 'TV/Show/e1.mkv')!r})")
+    drain(tr)
+    assert tr.take_deleted(0) == [("media", "TV/Show/e1.mkv")]
+    tr.stop()
+    db.close()

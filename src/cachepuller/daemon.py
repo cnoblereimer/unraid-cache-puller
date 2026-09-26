@@ -9,7 +9,7 @@ from dataclasses import asdict
 
 from .config import Config
 from .db import Database
-from .service import CycleReport, Service
+from .service import CleanupReport, CycleReport, Service
 from .settings import SettingsStore
 
 log = logging.getLogger(__name__)
@@ -38,12 +38,20 @@ class Daemon:
         self.last_cycle_end: float | None = None
         self.last_report: CycleReport | None = None
         self.last_error: str | None = None
+        # Deleted-file cleanup: first full check a few minutes after start.
+        self.next_cleanup: float | None = (
+            time.time() + min(cfg.cleanup_interval, 600) if cfg.cleanup_interval else None
+        )
+        self.cleanup_running = False
+        self.last_cleanup: CleanupReport | None = None
+        self.deleted_removed = 0  # removed right after being deleted, since start
 
     # -- configuration -----------------------------------------------------
 
     def apply_config(self, cfg: Config) -> None:
         """Switch to new settings without restarting."""
         old_interval = self.cfg.run_interval
+        old_cleanup = self.cfg.cleanup_interval
         self.cfg = cfg
         self.service.cfg = cfg
         self.db.half_life = cfg.half_life
@@ -51,6 +59,11 @@ class Daemon:
             self.tracker.debounce = cfg.access_debounce
         if cfg.run_interval != old_interval and self.last_cycle_end is not None:
             self.next_cycle = self.last_cycle_end + cfg.run_interval
+        if not cfg.cleanup_interval:
+            self.next_cleanup = None
+        elif cfg.cleanup_interval != old_cleanup or self.next_cleanup is None:
+            base = self.last_cleanup.finished if self.last_cleanup and self.last_cleanup.finished else time.time()
+            self.next_cleanup = max(time.time() + 60, base + cfg.cleanup_interval)
         self._wake.set()
         log.info("settings updated%s", " (DRY RUN)" if cfg.dry_run else "")
 
@@ -89,6 +102,53 @@ class Daemon:
                 self.last_cycle_end = time.time()
                 self.next_cycle = self.last_cycle_end + self.cfg.run_interval
 
+    # -- deleted files -------------------------------------------------------
+
+    DELETE_CHECK_DELAY = 60.0  # seconds between seeing a delete and checking
+
+    def request_cleanup(self) -> None:
+        if self.cleanup_running:
+            raise Busy("a check for deleted files is already running")
+        self._start_cleanup()
+
+    def _start_cleanup(self) -> None:
+        self.cleanup_running = True
+        threading.Thread(target=self._cleanup, name="cleanup", daemon=True).start()
+
+    def _cleanup(self) -> None:
+        try:
+            if self.tracker is not None:
+                self.tracker.flush()
+            self.last_cleanup = self.service.cleanup_missing()
+        except Exception as exc:
+            log.exception("deleted-file check failed")
+            self.last_cleanup = CleanupReport(started=time.time(), finished=time.time(),
+                                              skipped_reason=f"error: {exc}")
+        finally:
+            self.cleanup_running = False
+            if self.cfg.cleanup_interval:
+                self.next_cleanup = time.time() + self.cfg.cleanup_interval
+
+    def check_deleted(self, now: float | None = None) -> int:
+        """Forget files that were deleted a minute ago and are really gone."""
+        if self.tracker is None:
+            return 0
+        removed = 0
+        for share, rel in self.tracker.take_deleted(self.DELETE_CHECK_DELAY, now):
+            if not self.db.is_tracked(share, rel):
+                continue
+            ok, _msg = self.service.forget_if_missing(share, rel)
+            if ok:
+                removed += 1
+                log.debug("forgot deleted file %s/%s", share, rel)
+        self.deleted_removed += removed
+        return removed
+
+    def forget(self, share: str, rel: str) -> tuple[bool, str]:
+        return self.service.forget_if_missing(share, rel)
+
+    # -- loop ----------------------------------------------------------------
+
     def run_forever(self) -> None:
         while not self.stop.is_set():
             try:
@@ -96,6 +156,12 @@ class Daemon:
                     self.tracker.sync_roots(self.service.watch_roots())
             except Exception:
                 log.exception("could not update watches")
+            try:
+                self.check_deleted()
+            except Exception:
+                log.exception("could not check deleted files")
+            if self.next_cleanup is not None and time.time() >= self.next_cleanup and not self.cleanup_running:
+                self._start_cleanup()
             if time.time() >= self.next_cycle:
                 self.run_cycle()
             self._wake.clear()
@@ -118,6 +184,15 @@ class Daemon:
             "interval": self.cfg.run_interval,
             "last_error": self.last_error,
             "last_report": asdict(self.last_report) if self.last_report else None,
+        }
+
+    def cleanup_state(self) -> dict:
+        return {
+            "running": self.cleanup_running,
+            "interval": self.cfg.cleanup_interval,
+            "next_at": self.next_cleanup,
+            "removed_on_delete": self.deleted_removed,
+            "last": asdict(self.last_cleanup) if self.last_cleanup else None,
         }
 
     def tracker_state(self) -> dict:

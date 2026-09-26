@@ -153,3 +153,20 @@ def test_inotify_scans_disks_in_background(tmp_path):
     assert tr.watch_count == 2 * (1 + 30 * 2)
     tr.stop()
     db.close()
+
+
+def test_inotify_reports_deleted_files(tmp_path):
+    root = tmp_path / "media"
+    root.mkdir()
+    (root / "a.mkv").write_bytes(b"x")
+    db = Database(str(tmp_path / "db.sqlite"), half_life=3600)
+    tr = AccessTracker(db, debounce=0, mode="inotify")
+    tr.sync_roots({str(root): "media"})
+    tr.wait_for_scans()
+    os.unlink(root / "a.mkv")
+    tr.poll(1)
+    assert tr.take_deleted(60) == []  # not due yet
+    assert tr.take_deleted(0) == [("media", "a.mkv")]
+    assert tr.take_deleted(0) == []
+    tr.stop()
+    db.close()

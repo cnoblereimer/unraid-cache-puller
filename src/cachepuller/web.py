@@ -99,6 +99,7 @@ class Api:
             "shares": shares,
             "tracker": d.tracker_state(),
             "cycle": d.cycle_state(),
+            "cleanup": d.cleanup_state(),
             "counts": {
                 "tracked": len(scores),
                 "hot": sum(hot_by_share.values()),
@@ -171,6 +172,15 @@ class Api:
     def reset_settings(self) -> dict:
         self.d.apply_config(self.d.store.reset())
         return self.settings()
+
+    def cleanup(self) -> dict:
+        self.d.request_cleanup()
+        return {"ok": True, "message": "checking for deleted files…"}
+
+    def forget(self, body: dict) -> dict:
+        share, rel = _file_arg(body)
+        ok, msg = self.d.forget(share, rel)
+        return {"ok": ok, "message": msg}
 
     def run(self) -> dict:
         self.d.request_cycle()
@@ -295,6 +305,8 @@ def make_handler(api: Api, password: str | None):
                     "/api/settings": lambda: api.save_settings(body),
                     "/api/settings/reset": api.reset_settings,
                     "/api/run": api.run,
+                    "/api/cleanup": api.cleanup,
+                    "/api/forget": lambda: api.forget(body),
                     "/api/promote": lambda: api.promote(body),
                     "/api/exclude": lambda: api.exclude(body),
                 }

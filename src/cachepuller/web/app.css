@@ -159,6 +159,13 @@ input:focus, select:focus, textarea:focus, .btn:focus-visible, .tabs button:focu
 }
 .check { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; user-select: none; }
 .hint { color: var(--muted); margin: 4px 0 12px; font-size: 13px; }
+.cleanup-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 14px; margin-bottom: 12px; font-size: 13px; color: var(--muted);
+}
+.cleanup-bar:empty { display: none; }
+.cleanup-bar strong { color: var(--text); font-weight: 600; }
 
 .table-wrap { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow-x: auto; box-shadow: var(--shadow); }
 table.data { width: 100%; border-collapse: collapse; }

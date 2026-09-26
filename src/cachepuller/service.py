@@ -56,6 +56,24 @@ class FileCheck:
     dst_root: str = ""
 
 
+# A cleanup that finds more than this share of a share's tracked files missing
+# (and at least MASS_MISSING_MIN of them) assumes something is wrong, e.g. a
+# disk that isn't mounted, and leaves that share alone.
+MASS_MISSING_FRACTION = 0.5
+MASS_MISSING_MIN = 50
+
+
+@dataclass
+class CleanupReport:
+    started: float
+    finished: float | None = None
+    checked: int = 0
+    removed: int = 0
+    removed_examples: list[str] = field(default_factory=list)
+    skipped_shares: list[str] = field(default_factory=list)
+    skipped_reason: str | None = None
+
+
 @dataclass
 class CycleReport:
     skipped_reason: str | None = None
@@ -206,6 +224,106 @@ class Service:
         limit_used = int(usage.total * self.cfg.cache_max_percent / 100)
         reserve = max(self.cfg.cache_min_free, share.floor)
         return max(0, min(limit_used - usage.used, usage.avail - reserve))
+
+    # -- removing deleted files from the list ----------------------------------
+
+    def cleanup_blocked(self) -> str | None:
+        """Why missing files can't be judged reliably right now."""
+        st = array_state(self.cfg)
+        if not st.known:
+            return f"array state unknown ({st.detail})"
+        if not st.started:
+            return "array not started"
+        if not self.disks():
+            return "no array disks mounted"
+        return None
+
+    def file_exists(self, share: Share, rel: str, disks: list[str]) -> bool:
+        """Whether the file is on the share's pool or any array disk."""
+        locations = ([share.pool] if share.pool else []) + disks
+        return any(os.path.lexists(self._p(loc, share.name, rel)) for loc in locations)
+
+    def _share_checkable(self, share: Share, disks: list[str]) -> str | None:
+        """Why this share's files can't be checked (None if they can)."""
+        if share.pool and not pool_mounted(self.cfg, share.pool, self.require_mounts):
+            return f"pool {share.pool} is not mounted"
+        locations = ([share.pool] if share.pool else []) + disks
+        if not any(os.path.isdir(self._p(loc, share.name)) for loc in locations):
+            return "share folder not found on any disk or pool"
+        return None
+
+    def cleanup_missing(self, now: float | None = None) -> CleanupReport:
+        """Forget tracked files that no longer exist anywhere."""
+        report = CleanupReport(started=time.time() if now is None else now)
+        reason = self.cleanup_blocked()
+        if reason:
+            report.skipped_reason = reason
+            report.finished = time.time()
+            log.info("not checking for deleted files: %s", reason)
+            return report
+        all_shares = load_shares(self.cfg)
+        if not all_shares:
+            report.skipped_reason = f"no share configs found in {self.cfg.shares_cfg_dir}"
+            report.finished = time.time()
+            return report
+        disks = self.disks()
+        by_share: dict[str, list[str]] = {}
+        for f in self.db.scores(now=now):
+            by_share.setdefault(f.share, []).append(f.relpath)
+
+        for name, rels in sorted(by_share.items()):
+            if self.stop.is_set():
+                break
+            share = all_shares.get(name)
+            if share is None:
+                missing = rels  # the share itself was deleted in Unraid
+                log.info("share %s no longer exists; forgetting its %d file(s)", name, len(rels))
+            else:
+                why = self._share_checkable(share, disks)
+                if why:
+                    report.skipped_shares.append(f"{name}: {why}")
+                    log.warning("not checking share %s for deleted files: %s", name, why)
+                    continue
+                missing = []
+                for i, rel in enumerate(rels):
+                    if i % 1000 == 0 and self.stop.is_set():
+                        break
+                    if not self.file_exists(share, rel, disks):
+                        missing.append(rel)
+                if len(missing) >= MASS_MISSING_MIN and len(missing) > MASS_MISSING_FRACTION * len(rels):
+                    msg = (f"{len(missing)} of {len(rels)} files look deleted, which is suspicious "
+                           "(unmounted disk?); left alone")
+                    report.skipped_shares.append(f"{name}: {msg}")
+                    log.warning("share %s: %s", name, msg)
+                    continue
+            report.checked += len(rels)
+            if missing:
+                self.db.forget([(name, rel) for rel in missing])
+                report.removed += len(missing)
+                for rel in missing[: max(0, 20 - len(report.removed_examples))]:
+                    report.removed_examples.append(f"{name}/{rel}")
+        report.finished = time.time()
+        log.info("deleted-file check: %d file(s) checked, %d removed from the list%s",
+                 report.checked, report.removed,
+                 f", skipped: {'; '.join(report.skipped_shares)}" if report.skipped_shares else "")
+        return report
+
+    def forget_if_missing(self, share_name: str, rel: str) -> tuple[bool, str]:
+        """Forget one file if it no longer exists anywhere."""
+        reason = self.cleanup_blocked()
+        if reason:
+            return False, f"can't check right now: {reason}"
+        share = load_shares(self.cfg).get(share_name)
+        if share is None:
+            return False, f"share {share_name} not found"
+        disks = self.disks()
+        why = self._share_checkable(share, disks)
+        if why:
+            return False, f"can't check right now: {why}"
+        if self.file_exists(share, rel, disks):
+            return False, "the file still exists"
+        self.db.forget([(share_name, rel)])
+        return True, f"removed {share_name}/{rel} from the list"
 
     def check_file(
         self, share: Share, rel: str, score: float, disks: list[str], now: float | None = None

@@ -32,6 +32,7 @@ TEMP_PREFIX = ".cachepuller."
 DIR_MASK = (
     ino.IN_OPEN
     | ino.IN_CREATE
+    | ino.IN_DELETE
     | ino.IN_MOVED_FROM
     | ino.IN_MOVED_TO
     | ino.IN_ONLYDIR
@@ -76,6 +77,7 @@ class AccessTracker:
         self._last_hit: dict[tuple[str, str], float] = {}
         self._suppress: dict[tuple[str, str], float] = {}
         self._moves: dict[int, tuple[str, str, float]] = {}
+        self._deleted: dict[tuple[str, str], float] = {}  # files seen being deleted
         self._limit_warned = False
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -312,6 +314,9 @@ class AccessTracker:
             if ev.kind == "open":
                 if new and not os.path.basename(new[1]).startswith(TEMP_PREFIX):
                     self._hit(new[0], new[1], now)
+            elif ev.kind == "delete":
+                if new:
+                    self._note_deleted(new[0], new[1], now)
             elif ev.kind == "rename":
                 old = self._locate(ev.old_path) if ev.old_path else None
                 if old and new and old[0] == new[0] and old[1] != new[1]:
@@ -343,7 +348,9 @@ class AccessTracker:
                 continue
             if is_dir:
                 continue
-            if ev.mask & ino.IN_MOVED_FROM:
+            if ev.mask & ino.IN_DELETE:
+                self._note_deleted(w.share, rel, now)
+            elif ev.mask & ino.IN_MOVED_FROM:
                 self._moves[ev.cookie] = (w.share, rel, now)
             elif ev.mask & ino.IN_MOVED_TO:
                 src = self._moves.pop(ev.cookie, None)
@@ -355,6 +362,27 @@ class AccessTracker:
         # Forget unmatched move halves after a while.
         if self._moves:
             self._moves = {k: v for k, v in self._moves.items() if now - v[2] < 60}
+
+    def _note_deleted(self, share: str, rel: str, now: float) -> None:
+        if os.path.basename(rel).startswith(TEMP_PREFIX):
+            return
+        with self._lock:
+            if len(self._deleted) < 200000:
+                self._deleted[(share, rel)] = now
+
+    def take_deleted(self, older_than: float, now: float | None = None) -> list[tuple[str, str]]:
+        """Files seen being deleted at least ``older_than`` seconds ago.
+
+        A deletion on one disk doesn't mean the file is gone: the mover and
+        this app delete the old copy after copying a file elsewhere, so the
+        caller must still check every location.
+        """
+        now = time.time() if now is None else now
+        with self._lock:
+            due = [k for k, t in self._deleted.items() if now - t >= older_than]
+            for k in due:
+                del self._deleted[k]
+        return due
 
     def _hit(self, share: str, rel: str, now: float) -> None:
         key = (share, rel)

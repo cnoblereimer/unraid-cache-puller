@@ -145,3 +145,14 @@ def test_http_password(daemon):
         assert _req(base + "/api/overview", headers=bad)[0] == 401
     finally:
         server.shutdown()
+
+
+def test_forget_endpoint(daemon, unraid, db):
+    write(f"{unraid.mnt_root}/disk1/media/here.mkv")
+    hot(db, "media", "here.mkv", 1)
+    hot(db, "media", "gone.mkv", 1)
+    api = Api(daemon)
+    assert not api.forget({"share": "media", "relpath": "here.mkv"})["ok"]
+    assert api.forget({"share": "media", "relpath": "gone.mkv"})["ok"]
+    assert [r["relpath"] for r in api.files()["rows"]] == ["here.mkv"]
+    assert "cleanup" in api.overview()

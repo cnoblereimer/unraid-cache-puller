@@ -42,6 +42,7 @@ FAN_MARK_ADD = 0x1
 FAN_MARK_FILESYSTEM = 0x100
 
 FAN_OPEN = 0x20
+FAN_DELETE = 0x200
 FAN_Q_OVERFLOW = 0x4000
 FAN_RENAME = 0x10000000
 FAN_ONDIR = 0x40000000
@@ -99,7 +100,7 @@ def mount_point(path: str) -> str:
 
 @dataclass
 class FanEvent:
-    kind: str  # "open", "rename" or "overflow"
+    kind: str  # "open", "delete", "rename" or "overflow"
     pid: int
     path: str | None = None  # absolute path (new path for renames)
     old_path: str | None = None  # renames only
@@ -114,7 +115,7 @@ class Fanotify:
             e = ctypes.get_errno()
             raise OSError(e, f"fanotify_init: {os.strerror(e)}")
         self.fd = fd
-        self.mask = FAN_OPEN | FAN_RENAME
+        self.mask = FAN_OPEN | FAN_DELETE | FAN_RENAME
         self._mounts: dict[int, str] = {}  # fsid -> mount point in our namespace
         self._dir_cache: dict[tuple[int, int, bytes], tuple[float, str | None]] = {}
         self.cache_ttl = 30.0
@@ -166,10 +167,14 @@ class Fanotify:
                     new = self._resolve(infos.get(INFO_NEW_DFID_NAME), now)
                     if old or new:
                         events.append(FanEvent("rename", pid, new, old))
-                elif mask & FAN_OPEN:
+                elif mask & (FAN_OPEN | FAN_DELETE):
                     path = self._resolve(infos.get(INFO_DFID_NAME), now)
                     if path:
-                        events.append(FanEvent("open", pid, path))
+                        # A queued event can carry both bits when merged.
+                        if mask & FAN_OPEN:
+                            events.append(FanEvent("open", pid, path))
+                        if mask & FAN_DELETE:
+                            events.append(FanEvent("delete", pid, path))
             off += event_len
         return events
 

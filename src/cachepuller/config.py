@@ -73,6 +73,7 @@ class Config:
     # Behaviour
     dry_run: bool = True
     run_interval: int = 3600
+    cleanup_interval: float = 24 * 3600.0  # remove deleted files from the list; 0 = never
     allowed_hours: frozenset[int] | None = None
     include_shares: list[str] = field(default_factory=list)
     exclude_shares: list[str] = field(default_factory=list)
@@ -180,6 +181,8 @@ class Config:
 
         if (v := get("RUN_INTERVAL_MINUTES")) is not None:
             c.run_interval = int(float(v) * 60)
+        if (v := get("CLEANUP_INTERVAL_HOURS")) is not None:
+            c.cleanup_interval = float(v) * 3600
         if (v := get("ALLOWED_HOURS")) is not None:
             c.allowed_hours = parse_hours(v)
         if (v := get("MIN_SCORE")) is not None:
@@ -216,6 +219,10 @@ class Config:
             raise ConfigError("CACHE_MAX_PERCENT must be between 1 and 99")
         if self.run_interval < 60:
             raise ConfigError("RUN_INTERVAL_MINUTES must be at least 1")
+        if self.cleanup_interval < 0:
+            raise ConfigError("CLEANUP_INTERVAL_HOURS can't be negative")
+        if 0 < self.cleanup_interval < 3600:
+            raise ConfigError("CLEANUP_INTERVAL_HOURS must be 0 (never) or at least 1")
         if self.half_life <= 0:
             raise ConfigError("HALF_LIFE_HOURS must be positive")
         if self.min_score <= 0:

@@ -157,6 +157,28 @@ class Database:
             self._conn.execute("DELETE FROM history WHERE ts < ?", (now - 90 * 86400,))
         return len(stale)
 
+    def is_tracked(self, share: str, relpath: str) -> bool:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM files WHERE share=? AND relpath=?", (share, relpath)
+            ).fetchone()
+        return row is not None
+
+    def forget(self, keys: list[tuple[str, str]]) -> None:
+        """Remove files from the score list and the promoted list."""
+        if not keys:
+            return
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute("BEGIN")
+            try:
+                cur.executemany("DELETE FROM files WHERE share=? AND relpath=?", keys)
+                cur.executemany("DELETE FROM promoted WHERE share=? AND relpath=?", keys)
+                cur.execute("COMMIT")
+            except BaseException:
+                cur.execute("ROLLBACK")
+                raise
+
     def rename(self, share: str, old: str, new: str) -> None:
         with self._lock:
             self._conn.execute(

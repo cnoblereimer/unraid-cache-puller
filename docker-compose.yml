@@ -1,13 +1,15 @@
 # Cache Puller for Unraid.
 #
-# With the Compose Manager plugin: create a new stack, paste this file, and
-# change "build:" below to the folder where you put this repository, e.g.
-#   build: /mnt/user/appdata/cache-puller/source
-# Then "Compose Up". The web UI is at http://<your-server>:8484/
+# With the Compose Manager plugin: create a new stack, paste this file, set TZ,
+# then "Compose Up". The web UI is at http://<your-server>:8484/
+# To update: "Update Stack" (pulls the latest image), then "Compose Up".
 services:
   cache-puller:
-    build: .
-    image: unraid-cache-puller:local
+    image: ghcr.io/cnoblereimer/unraid-cache-puller:latest
+    # To build from source instead, replace the line above with these two,
+    # pointing "build" at the folder you cloned this repository into:
+    #   build: /mnt/user/appdata/cache-puller/source
+    #   image: unraid-cache-puller:local
     container_name: cache-puller
     restart: unless-stopped
     # Required: lets the container see which files are open on the host and

@@ -86,45 +86,43 @@ predictable. The container:
 
 ## Installation
 
-### With the Compose Manager plugin (builds the image on your server)
+### With the Compose Manager plugin
 
-1. Put this repository on the server, e.g. in
-   `/mnt/user/appdata/cache-puller/source`. From the Unraid terminal:
+A ready-made image is published at
+`ghcr.io/cnoblereimer/unraid-cache-puller`, built and tested by GitHub
+Actions on every change to `main`.
 
-   ```sh
-   mkdir -p /mnt/user/appdata/cache-puller
-   cd /mnt/user/appdata/cache-puller
-   git clone https://github.com/cnoblereimer/unraid-cache-puller.git source
-   ```
-
-   No `git` on your server? Download the repository as a ZIP from GitHub
-   (*Code → Download ZIP*) and unpack it into that folder, e.g. over SMB.
-2. In the Docker tab, under **Compose**, click **Add New Stack**, name it
+1. In the Docker tab, under **Compose**, click **Add New Stack**, name it
    `cache-puller`, and choose **Edit Stack → Compose File**.
-3. Paste the contents of [`docker-compose.yml`](docker-compose.yml), and change
-   `build: .` to `build: /mnt/user/appdata/cache-puller/source`. Set `TZ` to
-   your time zone. Change the `8484` port if it's already in use.
-4. Save, then click **Compose Up**. The first start builds the image, which
-   takes a minute.
-5. Open `http://<your-server>:8484/` (or use **WebUI** in the Docker tab's
+2. Paste the contents of [`docker-compose.yml`](docker-compose.yml). Set `TZ`
+   to your time zone. Change the `8484` port if it's already in use.
+3. Save, then click **Compose Up**.
+4. Open `http://<your-server>:8484/` (or use **WebUI** in the Docker tab's
    container menu).
 
-To update later, get the new code (`git pull` in the source folder, or unpack
-a new ZIP), rebuild the image from the Unraid terminal, then click **Compose
-Down** and **Compose Up**:
+To update: **Update Stack** (downloads the latest image), then **Compose Up**.
+Your data and settings live in `/mnt/user/appdata/cache-puller` and are kept.
 
-```sh
-cd /mnt/user/appdata/cache-puller/source && git pull
-docker build -t unraid-cache-puller:local .
+**Image tags:** `latest` follows `main`; version tags such as `0.2.0` are
+published for releases (git tags `v0.2.0`); `sha-<commit>` pins an exact build.
+Use a version tag instead of `latest` if you want to update only when you
+choose to.
+
+### Building the image yourself
+
+Clone the repository (e.g. to `/mnt/user/appdata/cache-puller/source`), and
+in the compose file replace the `image:` line with these two:
+
+```yaml
+    build: /mnt/user/appdata/cache-puller/source
+    image: unraid-cache-puller:local
 ```
 
-Compose Up alone would keep using the old image, because it only builds when
-the image doesn't exist yet. Your data and settings live in
-`/mnt/user/appdata/cache-puller` and are kept.
+To update: `git pull` in that folder, `docker build -t unraid-cache-puller:local .`,
+then **Compose Down** and **Compose Up**. Plain `docker compose up -d --build` in the source folder
+works too.
 
-Plain `docker compose up -d --build` in the source folder works too.
-
-### Unraid template (once an image is published)
+### Unraid Docker template
 
 Copy `unraid/cache-puller.xml` to
 `/boot/config/plugins/dockerMan/templates-user/my-cache-puller.xml`, then in

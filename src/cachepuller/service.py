@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from .config import Config
-from .db import Database, Promoted, is_hot
+from .db import Database, FileFilter, Promoted, is_hot
 from .safety import OpenFileChecker, mover_running
 from .transfer import Journal, TransferAborted, ensure_parents, safe_move
 from .tracker import TEMP_PREFIX
@@ -267,41 +267,53 @@ class Service:
             report.finished = time.time()
             return report
         disks = self.disks()
-        by_share: dict[str, list[str]] = {}
-        for f in self.db.scores(now=now):
-            by_share.setdefault(f.share, []).append(f.relpath)
-
-        for name, rels in sorted(by_share.items()):
+        self.db.missing_reset()
+        for name in self.db.tracked_shares():
             if self.stop.is_set():
                 break
+            total = self.db.count(FileFilter(share=name))
             share = all_shares.get(name)
             if share is None:
-                missing = rels  # the share itself was deleted in Unraid
-                log.info("share %s no longer exists; forgetting its %d file(s)", name, len(rels))
+                log.info("share %s no longer exists; forgetting its %d file(s)", name, total)
+                for batch in self.db.relpaths(name):
+                    self.db.missing_add(name, batch)
             else:
                 why = self._share_checkable(share, disks)
                 if why:
                     report.skipped_shares.append(f"{name}: {why}")
                     log.warning("not checking share %s for deleted files: %s", name, why)
                     continue
-                missing = []
-                for i, rel in enumerate(rels):
-                    if i % 1000 == 0 and self.stop.is_set():
+                # Files are checked in batches and the missing ones staged in
+                # a temporary table, so memory stays flat with millions of
+                # files. Nothing is deleted until the whole share is checked.
+                missing = 0
+                suspicious = False
+                for batch in self.db.relpaths(name):
+                    if self.stop.is_set():
                         break
-                    if not self.file_exists(share, rel, disks):
-                        missing.append(rel)
-                if len(missing) >= MASS_MISSING_MIN and len(missing) > MASS_MISSING_FRACTION * len(rels):
-                    msg = (f"{len(missing)} of {len(rels)} files look deleted, which is suspicious "
-                           "(unmounted disk?); left alone")
+                    gone = [rel for rel in batch if not self.file_exists(share, rel, disks)]
+                    if gone:
+                        self.db.missing_add(name, gone)
+                        missing += len(gone)
+                    if missing >= MASS_MISSING_MIN and missing > MASS_MISSING_FRACTION * total:
+                        suspicious = True
+                        break
+                if self.stop.is_set():
+                    self.db.missing_discard(name)
+                    break
+                if suspicious:
+                    self.db.missing_discard(name)
+                    msg = (f"more than {MASS_MISSING_FRACTION:.0%} of its {total} files look deleted, "
+                           "which is suspicious (unmounted disk?); left alone")
                     report.skipped_shares.append(f"{name}: {msg}")
                     log.warning("share %s: %s", name, msg)
                     continue
-            report.checked += len(rels)
-            if missing:
-                self.db.forget([(name, rel) for rel in missing])
-                report.removed += len(missing)
-                for rel in missing[: max(0, 20 - len(report.removed_examples))]:
-                    report.removed_examples.append(f"{name}/{rel}")
+            report.checked += total
+            examples = self.db.missing_examples(name, max(0, 20 - len(report.removed_examples)))
+            removed = self.db.missing_commit(name)
+            if removed:
+                report.removed += removed
+                report.removed_examples.extend(f"{name}/{rel}" for rel in examples)
         report.finished = time.time()
         log.info("deleted-file check: %d file(s) checked, %d removed from the list%s",
                  report.checked, report.removed,
@@ -381,11 +393,9 @@ class Service:
         files_left = cfg.max_files_per_run
         bytes_left = cfg.max_bytes_per_run
 
-        for fs in self.db.scores(now=now):
+        for fs in self.db.hot(cfg.min_score, now=now):
             if self.stop.is_set() or files_left <= 0:
                 break
-            if not is_hot(fs.score, cfg.min_score):
-                break  # sorted by score, nothing hotter follows
             share = by_name.get(fs.share)
             if share is None:
                 continue
@@ -605,9 +615,7 @@ class Service:
             path += ".dry-run"
         yes_shares = {s.name: s for s in shares if s.use_cache == "yes"}
         lines: list[str] = []
-        for fs in self.db.scores(now=now):
-            if not is_hot(fs.score, self.cfg.min_score):
-                break
+        for fs in self.db.hot(self.cfg.min_score, now=now):
             share = yes_shares.get(fs.share)
             if share is None or self._excluded(fs.relpath):
                 continue

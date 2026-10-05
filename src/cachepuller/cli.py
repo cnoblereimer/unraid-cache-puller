@@ -17,7 +17,7 @@ import time
 
 from . import __version__
 from .config import Config, ConfigError
-from .db import Database, is_hot
+from .db import Database, FileFilter
 from .safety import host_pid_visible, mover_running
 from .service import PoolUsage, Service, human
 from .settings import SettingsStore
@@ -166,11 +166,11 @@ def cmd_check(cfg: Config) -> int:
 def cmd_status(cfg: Config, limit: int) -> int:
     db = _open_db(cfg)
     now = time.time()
-    scores = db.scores(now=now)
-    hot = [f for f in scores if is_hot(f.score, cfg.min_score)]
-    print(f"tracked files: {len(scores)}, hot (score >= {cfg.min_score:g}): {len(hot)}\n")
+    tracked = db.count()
+    hot = db.count(FileFilter(min_score=cfg.min_score), now)
+    print(f"tracked files: {tracked}, hot (score >= {cfg.min_score:g}): {hot}\n")
     print(f"{'score':>7} {'hits':>5}  {'last access':<19}  file")
-    for f in scores[:limit]:
+    for f in db.query(limit=limit, now=now):
         last = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(f.last_access))
         print(f"{f.score:7.2f} {f.hits:5d}  {last:<19}  {f.share}/{f.relpath}")
     promoted = db.promoted()

@@ -229,3 +229,16 @@ def test_http_files_query(daemon, library):
         assert _req(base + "/api/files?sort=nope")[0] == 400
     finally:
         server.shutdown()
+
+
+def test_status_filter_asks_to_narrow_huge_lists(library, monkeypatch):
+    monkeypatch.setattr(Api, "CHECK_LIMIT", 4)
+    res = library.files(status="pool")
+    assert res["too_many"] == {"candidates": 5, "limit": 4}
+    assert res["rows"] == []
+    # Narrowed down by a cheap filter, it works again.
+    res = library.files(status="pool", since=6 * 3600)
+    assert res["too_many"] is None
+    assert paths(res) == ["media/c-pool.mkv"]
+    # Plain sorting never needs disk checks, whatever the size.
+    assert library.files(sort="hits")["too_many"] is None

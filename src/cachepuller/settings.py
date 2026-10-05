@@ -59,7 +59,8 @@ FIELDS: list[Field] = [
     Field("MIN_SCORE", "min_score", "Minimum score", "hotness", "number",
           "Roughly how many recent separate accesses a file needs before it is moved."),
     Field("HALF_LIFE_HOURS", "half_life", "Half-life", "hotness", "number",
-          "Accesses count half as much after this long.", unit="hours", scale=3600),
+          "Accesses count half as much after this long. Changing it recalculates every file's score, "
+          "which takes a few seconds with millions of files.", unit="hours", scale=3600),
     Field("ACCESS_DEBOUNCE_MINUTES", "access_debounce", "Count repeated opens once within", "hotness", "number",
           "A player opening a file several times while streaming counts as one access.",
           unit="minutes", scale=60),

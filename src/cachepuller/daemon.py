@@ -57,7 +57,7 @@ class Daemon:
         old_cleanup = self.cfg.cleanup_interval
         self.cfg = cfg
         self.service.cfg = cfg
-        self.db.half_life = cfg.half_life
+        self.db.set_half_life(cfg.half_life)
         if self.tracker is not None:
             self.tracker.debounce = cfg.access_debounce
         if cfg.run_interval != old_interval and self.last_cycle_end is not None:

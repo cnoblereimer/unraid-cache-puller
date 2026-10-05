@@ -435,7 +435,10 @@ function renderFiles(data) {
       el("td", {}, el("span", { class: "badge " + cls }, label), el("div", { class: "reason" }, r.reason)),
       el("td", {}, el("div", { class: "actions" }, actions)));
   });
-  const emptyText = filtersActive()
+  const emptyText = data.too_many
+    ? el("span", {}, `Filtering by status or location, and sorting by size, check each file on the disks, so they work on up to ${data.too_many.limit.toLocaleString()} files. `,
+      `Your other filters match ${data.too_many.candidates.toLocaleString()}: narrow them down first, e.g. pick a share, a "Used in the last…" period, tick "Only frequently used", or search.`)
+    : filtersActive()
     ? el("span", {}, "No files match these filters. ",
       el("button", { class: "btn small link", type: "button", onclick: () => setFiles({ ...FILE_FILTER_DEFAULTS }) }, "Clear filters"))
     : "No file accesses recorded yet. Open some files on a managed share and they'll appear here.";
@@ -660,7 +663,7 @@ function init() {
   let timer;
   $("#file-search").addEventListener("input", (e) => {
     clearTimeout(timer);
-    timer = setTimeout(() => setFiles({ q: e.target.value.trim() }), 250);
+    timer = setTimeout(() => setFiles({ q: e.target.value.trim() }), 400);
   });
   $("#hot-only").addEventListener("change", (e) => setFiles({ hot: e.target.checked }));
   $("#f-share").addEventListener("change", (e) => setFiles({ share: e.target.value }));

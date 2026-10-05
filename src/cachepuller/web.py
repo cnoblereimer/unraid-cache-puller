@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, urlparse
 from . import __version__
 from .config import ConfigError
 from .daemon import Busy, Daemon
-from .db import is_hot
+from .db import FileFilter, is_hot
 from .unraid import load_shares, managed_shares, pool_mounted
 
 log = logging.getLogger(__name__)
@@ -42,6 +42,7 @@ class Api:
     def __init__(self, daemon: Daemon):
         self.d = daemon
         self._checks: dict[tuple[str, str], tuple[float, int, dict]] = {}
+        self._counts_cache: tuple | None = None
 
     # -- read ----------------------------------------------------------------
 
@@ -53,11 +54,7 @@ class Api:
         all_shares = load_shares(cfg)
         managed = managed_shares(cfg, all_shares)
         managed_names = {s.name for s in managed}
-        scores = d.db.scores(now=now)
-        hot_by_share: dict[str, int] = {}
-        for f in scores:
-            if is_hot(f.score, cfg.min_score):
-                hot_by_share[f.share] = hot_by_share.get(f.share, 0) + 1
+        tracked, hot_by_share = self._counts(now)
         promoted = d.db.promoted()
 
         pools = []
@@ -102,7 +99,7 @@ class Api:
             "cycle": d.cycle_state(),
             "cleanup": d.cleanup_state(),
             "counts": {
-                "tracked": len(scores),
+                "tracked": tracked,
                 "hot": sum(hot_by_share.values()),
                 "promoted": len(promoted),
                 "promoted_bytes": sum(p.size for p in promoted),
@@ -111,7 +108,23 @@ class Api:
             "mover_ignore_file": cfg.mover_ignore_file,
         }
 
+    COUNTS_TTL = 15.0
+
+    def _counts(self, now: float) -> tuple[int, dict[str, int]]:
+        """Tracked and hot file counts, reused briefly (counting millions of
+        rows takes a moment and the Overview refreshes every few seconds)."""
+        key = (self.d.generation, self.d.cfg.min_score)
+        if self._counts_cache and self._counts_cache[1] == key and now - self._counts_cache[0] < self.COUNTS_TTL:
+            return self._counts_cache[2]
+        result = (self.d.db.count(), self.d.db.count_by_share(self.d.cfg.min_score, now))
+        self._counts_cache = (now, key, result)
+        return result
+
     SORT_KEYS = ("score", "hits", "last_access", "path", "size")
+    # Status/location filters and size sorting look every candidate file up
+    # on disk. Above this many candidates that would take too long (and wake
+    # disks), so the UI asks for a narrower list first.
+    CHECK_LIMIT = 50000
     STATES = ("pool", "candidate", "cold", "blocked", "missing", "unmanaged")
     CHECK_TTL = 600.0
 
@@ -159,54 +172,46 @@ class Api:
         ctx = {"now": now, "gen": d.generation, "managed": managed, "disks": disks,
                "promoted": {(p.share, p.relpath): p for p in d.db.promoted()}}
         started = time.monotonic()
-
-        rows = d.db.scores(now=now)
-        tracked_shares = sorted({r.share for r in rows}, key=str.lower)
-        # Cheap filters first: they only use what's in the database.
-        if hot_only:
-            rows = [r for r in rows if is_hot(r.score, cfg.min_score)]
-        if share:
-            rows = [r for r in rows if r.share == share]
-        if since:
-            rows = [r for r in rows if now - r.last_access <= since]
-        if q:
-            needle = q.lower()
-            rows = [r for r in rows if needle in f"{r.share}/{r.relpath}".lower()]
-
-        # Filters and sorts that need each file looked up on disk.
-        checked = bool(status or where or sort == "size")
-        if checked:
-            infos = {id(r): self._file_info(r, ctx) for r in rows}
-            if status:
-                rows = [r for r in rows if infos[id(r)]["state"] == status]
-            if where:
-                def at(loc: str) -> bool:
-                    if where == "array":
-                        return loc.startswith("disk") or loc == "several disks"
-                    return loc == where
-                rows = [r for r in rows if at(infos[id(r)]["location"])]
-
-        def path_key(r):
-            return f"{r.share}/{r.relpath}".lower()
-
-        rows.sort(key=path_key)  # stable tie-breaker for the sort below
-        if sort == "score":
-            rows.sort(key=lambda r: r.score, reverse=descending)
-        elif sort == "hits":
-            rows.sort(key=lambda r: r.hits, reverse=descending)
-        elif sort == "last_access":
-            rows.sort(key=lambda r: r.last_access, reverse=descending)
-        elif sort == "path":
-            if descending:
-                rows.reverse()
-        elif sort == "size":
-            rows.sort(key=lambda r: infos[id(r)]["size"], reverse=descending)
-
-        total = len(rows)
         limit = max(1, min(limit, 500))
         offset = max(0, offset)
+
+        # Filters the database evaluates itself, with indexes where possible.
+        flt = FileFilter(
+            share=share,
+            min_score=cfg.min_score if hot_only else None,
+            since=(now - since) if since else None,
+            text=q,
+        )
+        checked = bool(status or where or sort == "size")
+        too_many = None
+        if not checked:
+            # Everything happens in SQL: only one page of rows is loaded.
+            total = d.db.count(flt, now)
+            page = d.db.query(flt, sort=sort, descending=descending, limit=limit, offset=offset, now=now)
+        else:
+            candidates = d.db.count(flt, now)
+            if candidates > self.CHECK_LIMIT:
+                too_many = {"candidates": candidates, "limit": self.CHECK_LIMIT}
+                total, page = 0, []
+            else:
+                rows = d.db.query(flt, sort="score" if sort == "size" else sort,
+                                  descending=descending, now=now)
+                infos = {id(r): self._file_info(r, ctx) for r in rows}
+                if status:
+                    rows = [r for r in rows if infos[id(r)]["state"] == status]
+                if where:
+                    def at(loc: str) -> bool:
+                        if where == "array":
+                            return loc.startswith("disk") or loc == "several disks"
+                        return loc == where
+                    rows = [r for r in rows if at(infos[id(r)]["location"])]
+                if sort == "size":
+                    rows.sort(key=lambda r: (infos[id(r)]["size"], r.share, r.relpath), reverse=descending)
+                total = len(rows)
+                page = rows[offset: offset + limit]
+
         out = []
-        for r in rows[offset: offset + limit]:
+        for r in page:
             info = self._file_info(r, ctx)
             out.append({
                 "share": r.share, "relpath": r.relpath, "score": round(r.score, 2),
@@ -215,10 +220,11 @@ class Api:
             })
         pools = sorted({s.pool for s in managed.values() if s.pool})
         return {
+            "too_many": too_many,
             "total": total, "offset": offset, "limit": limit, "rows": out, "min_score": cfg.min_score,
             "sort": sort, "direction": "desc" if descending else "asc",
             "checked": checked, "elapsed": round(time.monotonic() - started, 2),
-            "options": {"shares": tracked_shares, "pools": pools, "disks": disks},
+            "options": {"shares": d.db.tracked_shares(), "pools": pools, "disks": disks},
         }
 
     def activity(self, limit: int = 100) -> dict:

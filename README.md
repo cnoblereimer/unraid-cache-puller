@@ -175,10 +175,14 @@ file was last used, and they combine with the search box. The browser
 remembers your filters and sort order, and **Clear filters** resets them.
 **Review plan** on the Overview opens the list filtered to *Will move*.
 
-Filtering by status or location, and sorting by size, needs every file
-looked up on the disks. The first time takes a few seconds with many files
-(and can wake sleeping disks); the results are then reused for a few minutes,
-and refreshed after every run, move, cleanup or settings change.
+Sorting, searching and the share, "last used" and "only frequently used"
+filters are answered by the database and stay fast with millions of files.
+Filtering by status or location, and sorting by size, need each file looked
+up on the disks, so they work on up to 50,000 files at a time: with more,
+the tab asks you to narrow the list down with the other filters first. The
+first lookup takes a few seconds (and can wake sleeping disks); the results
+are then reused for a few minutes, and refreshed after every run, move,
+cleanup or settings change.
 
 Each file has two buttons. **Move to cache** moves it right away, whatever its
 score (all safety checks still apply). **Never move** adds it to the exclude
